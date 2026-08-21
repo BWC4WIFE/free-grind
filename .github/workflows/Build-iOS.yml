@@ -55,6 +55,36 @@ jobs:
           # Keep xcodebuild happy if the generated project still references both arch outputs.
           mkdir -p src-tauri/gen/apple/Externals/x86_64/release
           cp "$LIB_PATH" src-tauri/gen/apple/Externals/x86_64/release/libapp.a
+  
+      - name: Disable Xcode Rust bridge script
+        run: |
+          PBXPROJ_PATH=$(find src-tauri/gen/apple -maxdepth 3 -name project.pbxproj | head -n 1)
+          if [ -z "$PBXPROJ_PATH" ]; then
+            echo "project.pbxproj not found under src-tauri/gen/apple"
+            exit 1
+          fi
+
+          # Use sed with a simpler approach
+          NEW_SCRIPT='shellScript = "set -e\\nLIB_PATH=\\"$SRCROOT\/Externals\/arm64\/release\/libapp.a\\"\\nif [ ! -f \\"$LIB_PATH\\" ]; then\\n  echo \\"Missing prebuilt Rust library\\"\\n  exit 1\\nfi\\n"'
+          
+          sed -i.bak '/tauri ios xcode-script/,/shellScript = / { /shellScript = /s/.*/'"$NEW_SCRIPT"'/ }' "$PBXPROJ_PATH"
+          rm -f "$PBXPROJ_PATH.bak"
+
+          if ! grep -q 'Missing prebuilt Rust library' "$PBXPROJ_PATH"; then
+            echo "Failed to replace Build Rust Code script"
+            exit 1
+          fi
+
+          if ! plutil -lint "$PBXPROJ_PATH" >/dev/null; then
+            echo "Patched project.pbxproj is invalid"
+            exit 1
+          fi
+
+          echo "Patched Build Rust Code script to use prebuilt libapp.a"
+
+
+
+
 
       - name: Disable Xcode Rust bridge script
         run: |
