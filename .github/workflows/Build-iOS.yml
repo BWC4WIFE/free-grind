@@ -64,7 +64,50 @@ jobs:
             exit 1
           fi
 
+          
+
           python3 << PYTHON_SCRIPT
+          import re
+          import sys
+          
+          pbxproj_path = "$PBXPROJ_PATH"
+          
+          try:
+              with open(pbxproj_path, 'r') as f:
+                  content = f.read()
+          except Exception as e:
+              print(f"Failed to read {pbxproj_path}: {e}")
+              sys.exit(1)
+          
+          # First, try the original pattern
+          pattern = r'(/\* tauri ios xcode-script \*/.*?shellScript = ")[^"]*(")'
+          new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+          
+          if new_content == content:
+              print("Primary pattern not found, trying alternative...")
+              # Look for any Build Phase with a shell script that might be the Rust build
+              # This is more flexible and catches variations in Xcode project structure
+              pattern = r'(shellScript = ")([^"]*(?:cargo|rustup|Build Rust Code)[^"]*)(")'
+              replacement = r'\1set -e\nLIB_PATH="$SRCROOT/Externals/arm64/release/libapp.a"\nif [ ! -f "$LIB_PATH" ]; then\n  echo "Missing prebuilt Rust library"\n  exit 1\nfi\n\3'
+              new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+          
+          if new_content == content:
+              print("Secondary pattern not found. Available content sections:")
+              # Debug: show what sections exist
+              sections = re.findall(r'/\*.*?\*/', content)
+              for section in sections[:10]:  # Show first 10 sections
+                  print(f"  {section}")
+              sys.exit(1)
+          
+          try:
+              with open(pbxproj_path, 'w') as f:
+                  f.write(new_content)
+          except Exception as e:
+              print(f"Failed to write {pbxproj_path}: {e}")
+              sys.exit(1)
+          
+          print("Successfully patched Build Rust Code script to use prebuilt libapp.a")
+          PYTHON_SCRIPT
           import re
           import sys
 
