@@ -64,7 +64,7 @@ jobs:
             exit 1
           fi
 
-          python3 << 'PYTHON_SCRIPT'
+          python3 << PYTHON_SCRIPT
           import re
           import sys
 
