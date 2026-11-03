@@ -1,6 +1,7 @@
 import { Album, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, EllipsisVertical, Eye, EyeOff, Flame, Images, LockKeyhole, MessageCircle, Pencil, Phone, SendHorizontal, ShieldCheck, StickyNote, Star, Trash2, Triangle, X, Zap } from "lucide-react";
 import toast from "react-hot-toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createWheelStepper } from "../../../../utils/wheelStepper";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -441,6 +442,13 @@ export function ProfileDetailsModal({
 	const mobileCarouselRef = useRef<HTMLDivElement | null>(null);
 	const carouselIndexRef = useRef(0);
 	const carouselTotalRef = useRef(0);
+	const photoWheelStepperRef = useRef(createWheelStepper());
+	const stepCarouselFromWheel = useCallback((event: WheelEvent) => {
+		const step = photoWheelStepperRef.current.push(event);
+		if (step !== 0) {
+			setMobileCarouselPhotoIndex((i) => Math.min(Math.max(i + step, 0), carouselTotalRef.current - 1));
+		}
+	}, []);
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const pageWrapRef = useRef<HTMLDivElement | null>(null);
 	const [profileSwipeDelta, setProfileSwipeDelta] = useState(0);
@@ -990,24 +998,26 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 	// Keep refs in sync so the wheel handler always sees current values
 	carouselIndexRef.current = mobileCarouselPhotoIndex;
 
+	// The carousel only exists once a profile has loaded, so attach the listener then.
+	const hasInlineCarousel =
+		isOpen && !isModalSplit && !isLoadingActiveProfile && !activeProfileError && Boolean(activeProfile);
+
 	useEffect(() => {
 		const el = mobileCarouselRef.current;
-		if (!el || isModalSplit) return;
+		if (!el || !hasInlineCarousel) return;
 		const onWheel = (e: WheelEvent) => {
 			const idx = carouselIndexRef.current;
 			const total = carouselTotalRef.current;
-			if (e.deltaY > 0 && idx < total - 1) {
-				e.preventDefault();
-				setMobileCarouselPhotoIndex((i) => Math.min(i + 1, total - 1));
-			} else if (e.deltaY < 0 && idx > 0) {
-				e.preventDefault();
-				setMobileCarouselPhotoIndex((i) => Math.max(i - 1, 0));
-			}
-			// At boundary: don't preventDefault → scroll propagates normally
+			const isAtBoundary = e.deltaY > 0 ? idx >= total - 1 : idx <= 0;
+			// At boundary: don't preventDefault → scroll propagates normally. Coasting from
+			// the swipe that landed here is still swallowed, or it would scroll the page.
+			if (isAtBoundary && !photoWheelStepperRef.current.isCoasting(e.timeStamp)) return;
+			e.preventDefault();
+			stepCarouselFromWheel(e);
 		};
 		el.addEventListener("wheel", onWheel, { passive: false });
 		return () => el.removeEventListener("wheel", onWheel);
-	}, [isModalSplit]);
+	}, [hasInlineCarousel, stepCarouselFromWheel]);
 
 	const photoCreatedAtByHash = useMemo(() => {
 		if (!activeProfile) {
@@ -2055,11 +2065,7 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 					<div
 						className="relative shrink-0 overflow-hidden bg-black"
 						style={{ width: "54%" }}
-						onWheel={(e) => {
-							e.preventDefault();
-							if (e.deltaY > 0) setMobileCarouselPhotoIndex((i) => Math.min(i + 1, carouselHashes.length - 1));
-							else if (e.deltaY < 0) setMobileCarouselPhotoIndex((i) => Math.max(i - 1, 0));
-						}}
+						onWheel={(e) => stepCarouselFromWheel(e.nativeEvent)}
 					>
 						{isRightNowSlideActive && (
 							<div
