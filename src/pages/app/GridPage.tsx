@@ -36,6 +36,7 @@ import { PageHeaderBackground } from "../../components/ui/PageHeaderBackground";
 import { FilterPill } from "../../components/ui/FilterPill";
 import { useBrowseFilters } from "./gridpage/hooks/useBrowseFilters";
 import { useTapProfile } from "./gridpage/hooks/useTapProfile";
+import { useProfileMessaging } from "./gridpage/hooks/useProfileMessaging";
 import { useDesktopBreakpoint } from "../../hooks/useDesktopBreakpoint";
 import { useManagedGenders, useManagedPronouns, useBlockedProfileIds, useBlockProfile, useUnblockProfile, useMyOwnProfile } from "../../hooks/queries/useProfileQueries";
 import { useQueryClient } from "@tanstack/react-query";
@@ -936,6 +937,8 @@ export function GridPage() {
 				setActiveProfile(cachedProfile);
 				setIsLoadingActiveProfile(false);
 			} else {
+				// Drop the previous profile so nothing can act on it while this one loads.
+				setActiveProfile(null);
 				setIsLoadingActiveProfile(true);
 			}
 
@@ -1139,6 +1142,36 @@ export function GridPage() {
 
 		return hashes;
 	}, [activeProfile]);
+
+	const { handleSendQuickMessage, handleSendProfilePhotoReply } = useProfileMessaging();
+
+	const hasMoreCards = nextPage !== null && !(nicknameFilter && loadedPageCount >= NICKNAME_FILTER_MAX_PAGES);
+	const activeCardIndex = activeProfileId
+		? sortedCards.findIndex((card) => card.profileId === activeProfileId)
+		: -1;
+	// The grid starts with your own card, which is not somewhere to page back to.
+	const prevCard = activeCardIndex > 0 ? sortedCards[activeCardIndex - 1] : null;
+	const prevProfileId = prevCard && prevCard.profileId !== selfCard?.profileId ? prevCard.profileId : null;
+	const nextProfileId =
+		activeCardIndex >= 0 && activeCardIndex < sortedCards.length - 1
+			? sortedCards[activeCardIndex + 1].profileId
+			: null;
+	const handlePrevProfile = useMemo(
+		() => (prevProfileId ? () => setActiveProfileId(prevProfileId) : undefined),
+		[prevProfileId],
+	);
+	const handleNextProfile = useMemo(
+		() => (nextProfileId ? () => setActiveProfileId(nextProfileId) : undefined),
+		[nextProfileId],
+	);
+
+	// Paging through profiles should not stop at the end of what the grid has loaded so far.
+	const isNearEndOfCards = activeCardIndex >= 0 && activeCardIndex >= sortedCards.length - 3;
+	useEffect(() => {
+		if (isNearEndOfCards && hasMoreCards) {
+			void handleLoadMoreCards();
+		}
+	}, [isNearEndOfCards, hasMoreCards, activeCardIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	const handleSelectProfile = (profileId: string) => {
 		if (window.matchMedia("(max-width: 639px)").matches) {
@@ -1808,7 +1841,7 @@ export function GridPage() {
 							localNicknamesByProfileId={localNicknamesByProfileId}
 							onSelectProfile={handleSelectProfile}
 							onMessageProfile={handleMessageProfile}
-							hasMore={nextPage !== null && !(nicknameFilter && loadedPageCount >= NICKNAME_FILTER_MAX_PAGES)}
+							hasMore={hasMoreCards}
 							isLoadingMore={isLoadingMoreCards}
 							onLoadMore={() => {
 								void handleLoadMoreCards();
@@ -1826,7 +1859,12 @@ export function GridPage() {
 			<ProfileDetailsModal
 				isOpen={Boolean(activeProfileId)}
 				onClose={() => setActiveProfileId(null)}
+				onPrevProfile={handlePrevProfile}
+				onNextProfile={handleNextProfile}
+				isProfileNavigationLocked={pendingProfileConfirm !== null}
 				onMessageProfile={handleMessageProfile}
+				onSendQuickMessage={handleSendQuickMessage}
+				onSendProfilePhotoReply={handleSendProfilePhotoReply}
 				onTagClick={handleTagClick}
 				onTriangleProfile={handleTriangleProfile}
 				onBlockProfile={handleBlockProfile}

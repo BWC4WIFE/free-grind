@@ -14,6 +14,7 @@ import { usePreferences } from "../../contexts/PreferencesContext";
 import { decodeGeohash, encodeGeohash } from "../../utils/geohash";
 import { validateMediaHash } from "../../utils/media";
 import { ProfileDetailsModal } from "./gridpage/components/ProfileDetailsModal";
+import { useProfileMessaging } from "./gridpage/hooks/useProfileMessaging";
 import { useTapProfile } from "./gridpage/hooks/useTapProfile";
 import { loadBrowseFiltersDraft } from "./browse-filters-storage";
 import {
@@ -241,6 +242,7 @@ export function GridProfilePage() {
 	});
 
 	const isTappingProfile = tappingProfileId === profileId;
+	const { handleSendQuickMessage, handleSendProfilePhotoReply } = useProfileMessaging();
 
 	const locationState = (location.state as { returnTo?: unknown; profileIds?: unknown } | null) ?? {};
 	const returnToFromState =
@@ -299,6 +301,8 @@ export function GridProfilePage() {
 				setIsSnapshotProfile(false);
 				setIsLoadingActiveProfile(false);
 			} else {
+				// Drop the previous profile so nothing can act on it while this one loads.
+				setActiveProfile(null);
 				setIsLoadingActiveProfile(true);
 			}
 
@@ -394,27 +398,6 @@ export function GridProfilePage() {
 		nextParams.set("targetProfileId", targetProfileId);
 		nextParams.set("returnTo", safeReturnTo);
 		navigate(`/chat?${nextParams.toString()}`);
-	};
-
-	const handleSendQuickMessage = async (targetProfileId: string, text: string) => {
-		try {
-			await apiFunctions.sendText({ targetProfileId: Number(targetProfileId), text });
-		} catch (error) {
-			toast.error(error instanceof Error ? error.message : t("chat.errors.send_failed"));
-		}
-	};
-
-	const handleSendProfilePhotoReply = async (targetProfileId: string, imageHash: string, text: string) => {
-		try {
-			await apiFunctions.sendMessage({
-				type: "ProfilePhotoReply",
-				target: { type: "Direct", targetId: Number(targetProfileId) },
-				body: { imageHash, photoContentReply: text },
-			});
-			toast.success(t("chat.toasts.photo_reply_sent", { defaultValue: "Reply sent" }));
-		} catch (error) {
-			toast.error(error instanceof Error ? error.message : t("chat.errors.send_failed"));
-		}
 	};
 
 	const performBlockProfile = async (targetProfileId: string) => {
@@ -745,6 +728,7 @@ export function GridProfilePage() {
 				}}
 				onPrevProfile={handlePrevProfile}
 				onNextProfile={handleNextProfile}
+				isProfileNavigationLocked={pendingProfileConfirm !== null}
 				onMessageProfile={handleMessageProfile}
 				onTagClick={handleTagClick}
 				onSendQuickMessage={handleSendQuickMessage}

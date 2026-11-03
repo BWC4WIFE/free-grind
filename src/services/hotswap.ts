@@ -119,12 +119,19 @@ export function getCurrentHotswapChannel(): HotswapChannel {
 	return currentChannel;
 }
 
+/**
+ * Over-the-air frontend updates come from the upstream project's server and would
+ * replace this fork's interface, so they stay off unless a build opts back in.
+ */
+const OTA_UPDATES_ENABLED = import.meta.env.VITE_OTA_UPDATES_ENABLED === "true";
+
 export function isHotswapAvailable(): boolean {
-	return isTauri();
+	return isTauri() && OTA_UPDATES_ENABLED;
 }
 
 export async function markHotswapStartupReady(): Promise<void> {
-	if (!isHotswapAvailable() || startupReadyNotified) {
+	// Runs even with OTA off: it confirms the running bundle to the native plugin.
+	if (!isTauri() || startupReadyNotified) {
 		return;
 	}
 

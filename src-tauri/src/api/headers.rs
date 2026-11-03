@@ -8,8 +8,9 @@ use wreq::{Client, EmulationProvider, Http2Config, PseudoOrder, SettingsOrder, S
 const DEFAULT_APP_VERSION: &str = "26.9.1.163471";
 const DEFAULT_BUILD_NUMBER: &str = "163471";
 const TIMEZONE: &str = "Europe/Madrid";
+// Upstream is archived, so this fork has to publish its own Grindr version numbers.
 const VERSION_FILE_URL: &str =
-    "https://raw.githubusercontent.com/imaoreo/free-grind/main/version.json";
+    "https://raw.githubusercontent.com/GPoss/free-grind/HEAD/version.json";
 
 /// References <https://opengrind.org/grindr-api/security-headers#cipher-suites>
 const MODERN_TLS_CIPHERS: &str = concat!(
