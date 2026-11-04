@@ -46,6 +46,7 @@ import { ChatRealtimeBridge } from "./components/ChatRealtimeBridge";
 import { GridAutoRefreshBridge } from "./components/GridAutoRefreshBridge";
 import { VideoCallManager } from "./components/VideoCallManager";
 import { ActiveRouteBridge } from "./components/ActiveRouteBridge";
+import { SystemBarBridge } from "./components/SystemBarBridge";
 import { KeepScreenOnBridge } from "./components/KeepScreenOnBridge";
 import { EntitlementsBridge } from "./components/EntitlementsBridge";
 import { ManagedOptionsCacheBridge } from "./components/ManagedOptionsCacheBridge";
@@ -176,6 +177,7 @@ export default function App() {
 		<AuthProvider>
 			<SplashReadyBridge />
 			<PreferencesProvider>
+			<SystemBarBridge />
 			<ExploreModeProvider>
 				<SinModeUnlockOverlay />
 				<SmoothScroll>
