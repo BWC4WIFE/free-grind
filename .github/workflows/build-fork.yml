@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: build-fork-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-windows:
@@ -61,6 +61,8 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK components
         run: |
