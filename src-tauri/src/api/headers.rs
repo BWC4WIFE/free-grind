@@ -5,8 +5,8 @@ use std::time::Duration;
 use wreq::header::{HeaderName, HeaderValue};
 use wreq::{Client, EmulationProvider, Http2Config, PseudoOrder, SettingsOrder, SslCurve, TlsConfig, TlsVersion};
 
-const DEFAULT_APP_VERSION: &str = "26.9.1.163471";
-const DEFAULT_BUILD_NUMBER: &str = "163471";
+const DEFAULT_APP_VERSION: &str = "26.24.0.195444";
+const DEFAULT_BUILD_NUMBER: &str = "195444";
 const TIMEZONE: &str = "Europe/Madrid";
 const VERSION_FILE_URL: &str =
     "https://raw.githubusercontent.com/imaoreo/free-grind/main/version.json";
