@@ -6,7 +6,7 @@
   <a href="https://discord.gg/cJqTaWPMFF"><img src="https://img.shields.io/discord/1496182396033175823?label=Discord&logo=discord" alt="Discord"></a>
   <a href="https://t.me/fre-grind"><img src="https://img.shields.io/badge/Telegram-2CA5E0?style=flat&logo=telegram&logoColor=white" alt="Telegram"></a>
   <a href="https://github.com/imaoreo/free-grind/releases"><img src="https://img.shields.io/github/v/release/imaoreo/free-grind?logo=github&label=Release" alt="Latest Release"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Personal%20Use-blue" alt="License"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License"></a>
   <a href="https://freegrind.imaoreo.dev/issues"><img src="https://img.shields.io/badge/Issues-freegrind.imaoreo.dev-blue?logo=bugatti" alt="Issues"></a>
 </p>
 
@@ -16,13 +16,16 @@
 An unofficial, cross-platform Grindr client — free, libre, ad-free, tracker-free, and community-driven.
 </p>
 
+> [!IMPORTANT]
+> **This project is no longer updated.** Free Grind is not being developed or maintained: there will be no new releases, bug fixes, or support, and it may stop working as the Grindr API changes. The source is available under the [MIT License](./LICENSE), so you are free to fork it and continue the work.
+
 ## Introduction
 
 Free Grind is a fully independent Grindr client built with [Tauri](https://tauri.app/) and React, running the same codebase on Windows, Linux, macOS, Android, and iOS. It is not a mod or patch of the official app — it communicates directly with the Grindr API as a native client.
 
 The goal is to provide a privacy-respecting, open, and extensible alternative to the official client, without ads, trackers, or forced upsells.
 
-Free Grind is under active development. Stability is not always guaranteed, and some features are still in progress. See [ROADMAP.md](./ROADMAP.md) for what's planned.
+Free Grind is no longer under active development. Stability is not guaranteed, and some features were left unfinished. See [ROADMAP.md](./ROADMAP.md) for what had been planned.
 
 Neither the maintainers nor contributors are affiliated with Grindr LLC.
 
@@ -152,7 +155,7 @@ The API reference documentation lives in [`docs/`](./docs/content/grindr-api/) a
 <details>
   <summary>Why isn't feature X implemented yet?</summary>
 
-  Free Grind is community-driven and under active development. Check the [ROADMAP.md](./ROADMAP.md) for planned features, or open a [feature request](https://freegrind.imaoreo.dev/issues).
+  Free Grind is no longer updated, so missing features will not be added here. The project is MIT licensed — you are welcome to fork it and implement them yourself.
 </details>
 
 <details>
@@ -175,4 +178,4 @@ If you'd like to support the project, see [FUNDING.md](./FUNDING.md).
 
 ## License
 
-[Personal Use Licence](./LICENSE)
+[MIT](./LICENSE)
