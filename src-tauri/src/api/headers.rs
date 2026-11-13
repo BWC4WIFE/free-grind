@@ -5,6 +5,45 @@ use std::time::Duration;
 use wreq::header::{HeaderName, HeaderValue};
 use wreq::{Client, EmulationProvider, Http2Config, PseudoOrder, SettingsOrder, SslCurve, TlsConfig, TlsVersion};
 
+
+
+const DEFAULT_APP_VERSION: &str = "26.24.0";
+const DEFAULT_BUILD_NUMBER: &str = "195444";
+
+#[derive(Debug, Deserialize)]
+struct VersionJson {
+    #[serde(
+        alias = "appVersion",
+        alias = "version",
+        alias = "versionName"
+    )]
+    app_version: String,
+
+    #[serde(
+        alias = "build",
+        alias = "buildNumber",
+        alias = "versionCode",
+        deserialize_with = "deserialize_build_number"
+    )]
+    build_number: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrNumber {
+    String(String),
+    Number(u64),
+}
+
+fn deserialize_build_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match StringOrNumber::deserialize(deserializer)? {
+        StringOrNumber::String(value) => value,
+        StringOrNumber::Number(value) => value.to_string(),
+    })
+}
 const DEFAULT_APP_VERSION: &str = "26.24.0.195444";
 const DEFAULT_BUILD_NUMBER: &str = "195444";
 const TIMEZONE: &str = "Europe/Madrid";
