@@ -53,7 +53,7 @@ import "react-image-crop/dist/ReactCrop.css";
 import type { NavigateFunction } from "react-router-dom";
 import toast from "react-hot-toast";
 import { appLog } from "../../../utils/logger";
-import { isIos, saveMediaToDevice } from "../../../services/saveMedia";
+import { isAndroid, isIos, saveMediaToDevice } from "../../../services/saveMedia";
 import { startOutgoingCall } from "../../../components/VideoCallManager";
 import { useVideoCallRemainingSeconds } from "../../../hooks/queries/useVideoCallQueries";
 import { isWebRtcSupported } from "../../../services/agoraCall";
@@ -1035,7 +1035,9 @@ export function ChatThreadPanel(props: ChatThreadPanelProps) {
 	}, [selectedConversation?.data.conversationId]);
 
 	useEffect(() => {
-		if (isDesktop) {
+		// On Android the native side already resizes the page above the keyboard,
+		// so measuring it here as well would lift the composer twice.
+		if (isDesktop || isAndroid()) {
 			setMobileKeyboardInset(0);
 			return;
 		}

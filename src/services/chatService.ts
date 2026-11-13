@@ -517,6 +517,18 @@ export function createChatService(fetchRest: RestFetcher, t: (key: string) => st
 			});
 
 			const v2Response = await fetchRest(`/v2/albums/${albumId}`);
+
+			// 405 means this route no longer answers GET, which is how a moved
+			// endpoint looks. Try the next API versions before giving up.
+			if (v2Response.status === 405) {
+				for (const version of ["v3", "v4"]) {
+					const response = await fetchRest(`/${version}/albums/${albumId}`);
+					if (response.status < 200 || response.status >= 300) continue;
+					const parsed = albumDetailsSchema.safeParse(await parseJsonSafe(response));
+					if (parsed.success) return parsed.data;
+				}
+			}
+
 			await assertSuccess(v2Response, t("chat.errors.load_album_details"));
 			const v2Result = albumDetailsSchema.parse(await parseJsonSafe(v2Response));
 

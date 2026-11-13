@@ -1,0 +1,159 @@
+name: Build Windows and Android
+
+on:
+  push:
+    branches:
+      - development
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-fork-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Windows installer
+        run: bunx tauri build --bundles nsis
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-grind-windows-x64
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 14
+          if-no-files-found: error
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "platform-tools" \
+            "ndk;29.0.14206865"
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Initialize Android project
+        run: bunx tauri android init --ci --skip-targets-install
+
+      - name: Ensure Android network security config
+        run: |
+          mkdir -p src-tauri/gen/android/app/src/main/res/xml
+          cat > src-tauri/gen/android/app/src/main/res/xml/network_security_config.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="true">
+                  <trust-anchors>
+                      <certificates src="system" />
+                      <certificates src="user" />
+                  </trust-anchors>
+              </base-config>
+          </network-security-config>
+          XML
+
+      - name: Add custom Android notification sound
+        run: |
+          mkdir -p src-tauri/gen/android/app/src/main/res/raw
+          install -m 0644 src-tauri/sounds/free_grind_message.mp3 src-tauri/gen/android/app/src/main/res/raw/free_grind_message.mp3
+
+      # Android only installs an update signed with the same key. Without the secret the
+      # APK still builds, but each build gets a new key and needs a reinstall.
+      - name: Prepare Android signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          mkdir -p src-tauri/certs
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/certs/free-grind-dev.jks
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; signing with a throwaway key."
+            keytool -genkeypair -v -keystore src-tauri/certs/free-grind-dev.jks \
+              -alias opengrind -storepass opengrind -keypass opengrind \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Free Grind Fork"
+          fi
+
+      - name: Build Android APK
+        run: bunx tauri android build --apk -v
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-grind-android
+          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+          retention-days: 14
+          if-no-files-found: error
+
+  publish-release:
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish to a GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="build-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" artifacts/*/* \
+            --target "$GITHUB_SHA" \
+            --title "Free Grind fork build ${GITHUB_RUN_NUMBER}" \
+            --notes "Windows installer and Android APK built from ${GITHUB_SHA}."

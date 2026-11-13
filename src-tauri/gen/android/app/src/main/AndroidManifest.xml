@@ -40,6 +40,7 @@
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
             android:theme="@style/Theme.free_grind.Starting"
+            android:windowSoftInputMode="adjustResize"
             android:screenOrientation="sensorPortrait"
             android:exported="false" />
 

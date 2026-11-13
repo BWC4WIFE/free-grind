@@ -9,6 +9,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Color
 import android.os.Handler
 import android.os.Build
 import android.os.Bundle
@@ -24,8 +25,13 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.ImageView
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
+import androidx.core.graphics.Insets
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
@@ -220,6 +226,7 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     webViewRef = webView
+    keepWebViewClearOfSystemUi()
 
     @Suppress("AddJavascriptInterface")
     webView.addJavascriptInterface(JsBridge(), "FreeGrindBridge")
@@ -229,6 +236,36 @@ class MainActivity : TauriActivity() {
     }
     dispatchPendingPushNotifications()
     handleNotificationIntent(intent)
+  }
+
+  /**
+   * The app draws edge to edge, so nothing moves out of the way of the keyboard
+   * or the navigation buttons by default. Pads the WebView's parent to resize
+   * the whole page above whichever is taller, and removes those insets from
+   * what the WebView sees so CSS safe areas don't add the same space again.
+   */
+  private fun keepWebViewClearOfSystemUi() {
+    val content = findViewById<View>(android.R.id.content)
+    content.setBackgroundColor(ContextCompat.getColor(this, R.color.splash_background))
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      window.isNavigationBarContrastEnforced = false
+    }
+
+    ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
+      val navigationBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+      val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
+      view.setPadding(
+        navigationBars.left,
+        0,
+        navigationBars.right,
+        maxOf(navigationBars.bottom, keyboard.bottom),
+      )
+      WindowInsetsCompat.Builder(insets)
+        .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.NONE)
+        .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+        .build()
+    }
+    ViewCompat.requestApplyInsets(content)
   }
 
   override fun onResume() {
@@ -281,6 +318,20 @@ class MainActivity : TauriActivity() {
         )
       } catch (e: Exception) {
         Log.e("FCM", "Failed to parse notification preferences", e)
+      }
+    }
+
+    /**
+     * Matches the strip behind the navigation buttons to the app's background,
+     * which can differ from the phone's own light or dark setting.
+     */
+    @JavascriptInterface
+    fun setSystemBarBackground(red: Int, green: Int, blue: Int) {
+      runOnUiThread {
+        val color = Color.rgb(red, green, blue)
+        findViewById<View>(android.R.id.content).setBackgroundColor(color)
+        WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightNavigationBars =
+          ColorUtils.calculateLuminance(color) > 0.5
       }
     }
 

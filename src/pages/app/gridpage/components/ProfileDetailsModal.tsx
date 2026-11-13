@@ -1,6 +1,7 @@
-import { Album, Ban, Check, ChevronDown, ChevronLeft, ChevronUp, EllipsisVertical, Eye, EyeOff, Flame, Images, LockKeyhole, MessageCircle, Pencil, Phone, ShieldCheck, StickyNote, Star, Trash2, Triangle, X, Zap } from "lucide-react";
+import { Album, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, EllipsisVertical, Eye, EyeOff, Flame, Images, LockKeyhole, MessageCircle, Pencil, Phone, SendHorizontal, ShieldCheck, StickyNote, Star, Trash2, Triangle, X, Zap } from "lucide-react";
 import toast from "react-hot-toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createWheelStepper } from "../../../../utils/wheelStepper";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -75,12 +76,15 @@ const ALBUM_SLIDE_HASH = "__album_slide__";
 // (and no Right Now slide either) — keeps the default-avatar placeholder as
 // its own slide instead of just disappearing once an album slide is added.
 const DEFAULT_PROFILE_SLIDE_HASH = "__default_profile_slide__";
+/** Matches the limit enforced by sendTextPayloadSchema. */
+const QUICK_MESSAGE_MAX_LENGTH = 1000;
 
 type ProfileDetailsModalProps = {
 	isOpen: boolean;
 	onClose: () => void;
 	onMessageProfile?: (profileId: string) => void;
-	onSendQuickMessage?: (profileId: string, text: string) => void;
+	/** Resolves to true once the message was accepted, so a failed send keeps the draft. */
+	onSendQuickMessage?: (profileId: string, text: string) => Promise<boolean>;
 	onSendProfilePhotoReply?: (profileId: string, imageHash: string, text: string) => void | Promise<void>;
 	onTriangleProfile?: (profileId: string) => void;
 	onBlockProfile?: (profileId: string) => void;
@@ -117,7 +121,21 @@ type ProfileDetailsModalProps = {
 	variant?: "modal" | "page";
 	onPrevProfile?: () => void;
 	onNextProfile?: () => void;
+	/** Set while the parent shows a dialog on top, so arrow keys cannot change profile behind it. */
+	isProfileNavigationLocked?: boolean;
 };
+
+/**
+ * True when arrow keys should move the caret instead of changing profile. The quick
+ * message box only counts once it has text, so send → arrow → type stays one flow.
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+	if (!(target instanceof HTMLElement)) return false;
+	if (target instanceof HTMLInputElement && target.dataset.quickMessageInput !== undefined) {
+		return target.value.length > 0;
+	}
+	return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
 
 function normalizeMediaCreatedAt(value: unknown): number | null {
 	if (typeof value !== "number" && typeof value !== "string") {
@@ -212,6 +230,7 @@ export function ProfileDetailsModal({
 	variant = "modal",
 	onPrevProfile,
 	onNextProfile,
+	isProfileNavigationLocked = false,
 }: ProfileDetailsModalProps) {
 	const { t } = useTranslation();
 	const { unitsPreset, showAlbumSensitiveContentWarning } = usePreferences();
@@ -253,7 +272,10 @@ export function ProfileDetailsModal({
 		return t("profile_details.anonymous", "Someone");
 	}, [activeProfile, localNickname, t]);
 
-	const messageProfileId = activeProfile?.profileId ?? selectedBrowseCard?.profileId ?? null;
+	// The browse card changes with the selection, while activeProfile can still hold the
+	// previous profile until its details load. Messages must never target that stale one.
+	const messageProfileId = selectedBrowseCard?.profileId ?? activeProfile?.profileId ?? null;
+	const messageTargetId = messageProfileId == null ? null : String(messageProfileId);
 	const isOwnProfile = userId != null && messageProfileId != null && String(userId) === String(messageProfileId);
 	const profileDistance =
 		activeProfile?.distance ?? selectedBrowseCard?.distanceMeters ?? null;
@@ -403,6 +425,10 @@ export function ProfileDetailsModal({
 		null,
 	);
 
+	const selectedPhotoIndexRef = useRef(selectedPhotoIndex);
+	selectedPhotoIndexRef.current = selectedPhotoIndex;
+	const albumViewerOpenRef = useRef(false);
+
 	const [mobileCarouselPhotoIndex, setMobileCarouselPhotoIndex] = useState(0);
 	const [isDesktopLike, setIsDesktopLike] = useState(() => {
 		if (typeof window === "undefined") {
@@ -416,6 +442,13 @@ export function ProfileDetailsModal({
 	const mobileCarouselRef = useRef<HTMLDivElement | null>(null);
 	const carouselIndexRef = useRef(0);
 	const carouselTotalRef = useRef(0);
+	const photoWheelStepperRef = useRef(createWheelStepper());
+	const stepCarouselFromWheel = useCallback((event: WheelEvent) => {
+		const step = photoWheelStepperRef.current.push(event);
+		if (step !== 0) {
+			setMobileCarouselPhotoIndex((i) => Math.min(Math.max(i + step, 0), carouselTotalRef.current - 1));
+		}
+	}, []);
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const pageWrapRef = useRef<HTMLDivElement | null>(null);
 	const [profileSwipeDelta, setProfileSwipeDelta] = useState(0);
@@ -428,6 +461,10 @@ export function ProfileDetailsModal({
 	const [banBioPrompt, setBanBioPrompt] = useState<{ text: string } | null>(null);
 	const [banNamePrompt, setBanNamePrompt] = useState<{ text: string } | null>(null);
 	const [quickMessageDraft, setQuickMessageDraft] = useState("");
+	const [isSendingQuickMessage, setIsSendingQuickMessage] = useState(false);
+	const isSendingQuickMessageRef = useRef(false);
+	const messageTargetIdRef = useRef(messageTargetId);
+	messageTargetIdRef.current = messageTargetId;
 	const [barTapPickerOpen, setBarTapPickerOpen] = useState(false);
 	const [barInputVisible, setBarInputVisible] = useState(true);
 	const [barTapHoverId, setBarTapHoverId] = useState<number | null>(null);
@@ -863,6 +900,71 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
     ]);
 
 	useModalClose({ isOpen, onClose });
+
+	// A draft belongs to one person: never carry it over to the next profile.
+	useEffect(() => {
+		setQuickMessageDraft("");
+		setIsActionsMenuOpen(false);
+		scrollContainerRef.current?.scrollTo({ top: 0 });
+	}, [messageTargetId, isOpen]);
+
+	const submitQuickMessage = useCallback(async () => {
+		const text = quickMessageDraft.trim();
+		const targetId = messageTargetId;
+		if (!targetId || !text || !onSendQuickMessage || isSendingQuickMessageRef.current) {
+			return;
+		}
+
+		isSendingQuickMessageRef.current = true;
+		setIsSendingQuickMessage(true);
+		try {
+			const wasSent = await onSendQuickMessage(targetId, text);
+			if (wasSent && messageTargetIdRef.current === targetId) {
+				setQuickMessageDraft("");
+			}
+		} finally {
+			isSendingQuickMessageRef.current = false;
+			setIsSendingQuickMessage(false);
+		}
+	}, [messageTargetId, onSendQuickMessage, quickMessageDraft]);
+
+	const handleQuickMessageKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+			event.preventDefault();
+			void submitQuickMessage();
+		}
+	};
+
+	const handleQuickMessageAction = () => {
+		if (quickMessageDraft.trim()) {
+			void submitQuickMessage();
+		} else if (messageTargetId) {
+			onMessageProfile?.(messageTargetId);
+		}
+	};
+
+	useEffect(() => {
+		if (!isOpen || isProfileNavigationLocked || (!onPrevProfile && !onNextProfile)) {
+			return;
+		}
+
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+			// Holding a key would fire one profile request per repeat.
+			if (event.repeat || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+			if (isTypingTarget(event.target)) return;
+			if (selectedPhotoIndexRef.current !== null || albumViewerOpenRef.current) return;
+
+			const navigateProfile = event.key === "ArrowLeft" ? onPrevProfile : onNextProfile;
+			if (navigateProfile) {
+				event.preventDefault();
+				navigateProfile();
+			}
+		};
+
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [isOpen, isProfileNavigationLocked, onNextProfile, onPrevProfile]);
 	const handleBackdropClose = useMemo(
 		() => createBackdropCloseHandler(onClose),
 		[onClose],
@@ -896,24 +998,26 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 	// Keep refs in sync so the wheel handler always sees current values
 	carouselIndexRef.current = mobileCarouselPhotoIndex;
 
+	// The carousel only exists once a profile has loaded, so attach the listener then.
+	const hasInlineCarousel =
+		isOpen && !isModalSplit && !isLoadingActiveProfile && !activeProfileError && Boolean(activeProfile);
+
 	useEffect(() => {
 		const el = mobileCarouselRef.current;
-		if (!el || isModalSplit) return;
+		if (!el || !hasInlineCarousel) return;
 		const onWheel = (e: WheelEvent) => {
 			const idx = carouselIndexRef.current;
 			const total = carouselTotalRef.current;
-			if (e.deltaY > 0 && idx < total - 1) {
-				e.preventDefault();
-				setMobileCarouselPhotoIndex((i) => Math.min(i + 1, total - 1));
-			} else if (e.deltaY < 0 && idx > 0) {
-				e.preventDefault();
-				setMobileCarouselPhotoIndex((i) => Math.max(i - 1, 0));
-			}
-			// At boundary: don't preventDefault → scroll propagates normally
+			const isAtBoundary = e.deltaY > 0 ? idx >= total - 1 : idx <= 0;
+			// At boundary: don't preventDefault → scroll propagates normally. Coasting from
+			// the swipe that landed here is still swallowed, or it would scroll the page.
+			if (isAtBoundary && !photoWheelStepperRef.current.isCoasting(e.timeStamp)) return;
+			e.preventDefault();
+			stepCarouselFromWheel(e);
 		};
 		el.addEventListener("wheel", onWheel, { passive: false });
 		return () => el.removeEventListener("wheel", onWheel);
-	}, [isModalSplit]);
+	}, [hasInlineCarousel, stepCarouselFromWheel]);
 
 	const photoCreatedAtByHash = useMemo(() => {
 		if (!activeProfile) {
@@ -1112,7 +1216,6 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 	const [albumViewerIndex, setAlbumViewerIndex] = useState(0);
 	const [isOpeningAlbum, setIsOpeningAlbum] = useState(false);
 	const [isSavingAllAlbumMedia, setIsSavingAllAlbumMedia] = useState(false);
-	const albumViewerOpenRef = useRef(false);
 	albumViewerOpenRef.current = albumViewer != null;
 
 	useEffect(() => {
@@ -1740,12 +1843,10 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 								type="text"
 								value={quickMessageDraft}
 								onChange={(e) => setQuickMessageDraft(e.target.value)}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && quickMessageDraft.trim()) {
-										onSendQuickMessage?.(String(messageProfileId), quickMessageDraft.trim());
-										setQuickMessageDraft("");
-									}
-								}}
+								onKeyDown={handleQuickMessageKeyDown}
+								readOnly={isSendingQuickMessage}
+								maxLength={QUICK_MESSAGE_MAX_LENGTH}
+								data-quick-message-input=""
 								placeholder={t("profile_details.quick_message_placeholder", "Message...")}
 								className="relative h-11 w-full rounded-xl bg-transparent px-4 text-sm text-[var(--text)] placeholder:text-[var(--text-muted)] outline-none"
 								style={{ opacity: barInputVisible ? 1 : 0, transition: barInputVisible ? "opacity 0.25s" : "opacity 0.12s" }}
@@ -1794,18 +1895,13 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 						{(onMessageProfile || onSendQuickMessage) && (
 							<button
 								type="button"
-								onClick={() => {
-									if (quickMessageDraft.trim()) {
-										onSendQuickMessage?.(String(messageProfileId), quickMessageDraft.trim());
-										setQuickMessageDraft("");
-									} else {
-										onMessageProfile?.(String(messageProfileId));
-									}
-								}}
-								className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-none bg-transparent text-[var(--accent)] transition hover:brightness-110"
+								onClick={handleQuickMessageAction}
+								disabled={isSendingQuickMessage}
+								aria-label={quickMessageDraft.trim() ? t("profile_details.quick_message_send", "Send message") : t("profile_details.open_chat", "Open chat")}
+								className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-none bg-transparent text-[var(--accent)] transition hover:brightness-110 disabled:opacity-40"
 							>
 								<span className="relative inline-flex">
-									<MessageCircle className="h-5 w-5" strokeWidth={1.8} />
+									{quickMessageDraft.trim() ? <SendHorizontal className="h-5 w-5" strokeWidth={1.8} /> : <MessageCircle className="h-5 w-5" strokeWidth={1.8} />}
 									{(chatContactStatus?.unreadCount ?? 0) > 0 && (
 										<span className="absolute -top-1.5 -right-2 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[9px] font-bold text-[var(--accent-contrast)] shadow-sm">
 											{chatContactStatus?.unreadCount}
@@ -1928,11 +2024,30 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 		);
 	}
 
+	const hasProfileNavigation = Boolean(onPrevProfile || onNextProfile);
+	const renderProfileNavButton = (
+		label: string,
+		onNavigate: (() => void) | undefined,
+		Icon: typeof ChevronLeft,
+	) => (
+		<button
+			type="button"
+			onClick={onNavigate}
+			disabled={!onNavigate}
+			title={label}
+			aria-label={label}
+			className="mx-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/25 bg-black/50 text-white backdrop-blur-md transition hover:bg-black/75 disabled:opacity-25 disabled:hover:bg-black/50"
+		>
+			<Icon className="h-6 w-6" />
+		</button>
+	);
+
 	return (
 		<div
 			className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6"
 			onClick={handleBackdropClose}
 		>
+			{hasProfileNavigation && renderProfileNavButton(t("profile_details.previous_profile", "Previous profile"), onPrevProfile, ChevronLeft)}
 			<div
 				className="surface-card flex w-full max-w-[min(80vw,1300px)] overflow-hidden rounded-2xl"
 				style={{
@@ -1950,11 +2065,7 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 					<div
 						className="relative shrink-0 overflow-hidden bg-black"
 						style={{ width: "54%" }}
-						onWheel={(e) => {
-							e.preventDefault();
-							if (e.deltaY > 0) setMobileCarouselPhotoIndex((i) => Math.min(i + 1, carouselHashes.length - 1));
-							else if (e.deltaY < 0) setMobileCarouselPhotoIndex((i) => Math.max(i - 1, 0));
-						}}
+						onWheel={(e) => stepCarouselFromWheel(e.nativeEvent)}
 					>
 						{isRightNowSlideActive && (
 							<div
@@ -2226,7 +2337,10 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 										<div className="relative min-w-0 flex-1" style={{ pointerEvents: barInputVisible ? "auto" : "none" }}>
 											<div className="pointer-events-none absolute inset-0 rounded-xl backdrop-blur-md" style={{ background: "color-mix(in srgb, var(--surface-2) 50%, transparent)", border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)", opacity: barInputVisible ? 1 : 0, transition: barInputVisible ? "opacity 0.25s" : "opacity 0.12s" }} />
 											<input type="text" value={quickMessageDraft} onChange={(e) => setQuickMessageDraft(e.target.value)}
-												onKeyDown={(e) => { if (e.key === "Enter" && quickMessageDraft.trim()) { onSendQuickMessage?.(String(messageProfileId), quickMessageDraft.trim()); setQuickMessageDraft(""); } }}
+												onKeyDown={handleQuickMessageKeyDown}
+												readOnly={isSendingQuickMessage}
+												maxLength={QUICK_MESSAGE_MAX_LENGTH}
+												data-quick-message-input=""
 												placeholder={t("profile_details.quick_message_placeholder", "Message...")}
 												className="relative h-11 w-full rounded-xl bg-transparent px-4 text-sm text-[var(--text)] placeholder:text-[var(--text-muted)] outline-none"
 												style={{ opacity: barInputVisible ? 1 : 0, transition: barInputVisible ? "opacity 0.25s" : "opacity 0.12s" }} />
@@ -2250,10 +2364,11 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 											{barTapPickerOpen ? <X className="h-5 w-5" strokeWidth={2} /> : barTapHoverId !== null ? barTapEmoji(barTapHoverId) : isTapActive ? barTapEmoji(tapVisualState.tapId) : <Flame className="h-5 w-5" strokeWidth={1.8} />}
 										</button>
 										{(onMessageProfile || onSendQuickMessage) && (
-											<button type="button" onClick={() => { if (quickMessageDraft.trim()) { onSendQuickMessage?.(String(messageProfileId), quickMessageDraft.trim()); setQuickMessageDraft(""); } else { onMessageProfile?.(String(messageProfileId)); } }}
-												className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-none bg-transparent text-[var(--accent)] transition hover:brightness-110">
+											<button type="button" onClick={handleQuickMessageAction} disabled={isSendingQuickMessage}
+												aria-label={quickMessageDraft.trim() ? t("profile_details.quick_message_send", "Send message") : t("profile_details.open_chat", "Open chat")}
+												className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-none bg-transparent text-[var(--accent)] transition hover:brightness-110 disabled:opacity-40">
 												<span className="relative inline-flex">
-													<MessageCircle className="h-5 w-5" strokeWidth={1.8} />
+													{quickMessageDraft.trim() ? <SendHorizontal className="h-5 w-5" strokeWidth={1.8} /> : <MessageCircle className="h-5 w-5" strokeWidth={1.8} />}
 													{(chatContactStatus?.unreadCount ?? 0) > 0 && (
 														<span className="absolute -top-1.5 -right-2 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[9px] font-bold text-[var(--accent-contrast)] shadow-sm">
 															{chatContactStatus?.unreadCount}
@@ -2308,6 +2423,7 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 					</span>
 				</>
 			)}
+			{hasProfileNavigation && renderProfileNavButton(t("profile_details.next_profile", "Next profile"), onNextProfile, ChevronRight)}
 			{photoViewerOverlay}
 			{albumOpeningOverlay}
 			{albumViewerOverlay}

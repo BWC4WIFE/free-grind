@@ -19,6 +19,17 @@ An unofficial, cross-platform Grindr client — free, libre, ad-free, tracker-fr
 > [!IMPORTANT]
 > **This project is no longer updated.** Free Grind is not being developed or maintained: there will be no new releases, bug fixes, or support, and it may stop working as the Grindr API changes. The source is available under the [MIT License](./LICENSE), so you are free to fork it and continue the work.
 
+## About this fork
+
+This fork continues from the archived [imaoreo/free-grind](https://github.com/imaoreo/free-grind), focused on the Windows and Android builds.
+
+- Messages can be sent straight from the profile box on the grid.
+- The left and right arrow keys, or the on-screen arrows, move between profiles.
+- Upstream over-the-air updates are off, so they cannot replace this fork's interface.
+- `version.json` here sets the Grindr version the app reports. Update it if sign-in or requests start failing with an outdated-version error; installed apps pick it up on their next start.
+
+Pushing to `development` runs the **Build Windows and Android** workflow, which publishes a release with the installer and APK. To keep Android updates installing over each other, add a keystore as the `ANDROID_KEYSTORE_BASE64` repository secret (alias and passwords `opengrind`). Without it, every build needs a reinstall.
+
 ## Introduction
 
 Free Grind is a fully independent Grindr client built with [Tauri](https://tauri.app/) and React, running the same codebase on Windows, Linux, macOS, Android, and iOS. It is not a mod or patch of the official app — it communicates directly with the Grindr API as a native client.

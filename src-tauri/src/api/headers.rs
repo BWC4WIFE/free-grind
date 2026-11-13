@@ -5,10 +5,12 @@ use std::time::Duration;
 use wreq::header::{HeaderName, HeaderValue};
 use wreq::{Client, EmulationProvider, Http2Config, PseudoOrder, SettingsOrder, SslCurve, TlsConfig, TlsVersion};
 
-
-
-const DEFAULT_APP_VERSION: &str = "26.24.0";
+const DEFAULT_APP_VERSION: &str = "26.24.0.195444";
 const DEFAULT_BUILD_NUMBER: &str = "195444";
+const TIMEZONE: &str = "Europe/Madrid";
+// Upstream is archived, so this fork has to publish its own Grindr version numbers.
+const VERSION_FILE_URL: &str =
+    "https://raw.githubusercontent.com/gustarmartins/GrindrPlus/refs/heads/master/version.json";
 
 #[derive(Debug, Deserialize)]
 struct VersionJson {
@@ -44,11 +46,6 @@ where
         StringOrNumber::Number(value) => value.to_string(),
     })
 }
-const DEFAULT_APP_VERSION: &str = "26.24.0.195444";
-const DEFAULT_BUILD_NUMBER: &str = "195444";
-const TIMEZONE: &str = "Europe/Madrid";
-const VERSION_FILE_URL: &str =
-    "https://raw.githubusercontent.com/gustarmartins/GrindrPlus/refs/heads/master/version.json";
 
 /// References <https://opengrind.org/grindr-api/security-headers#cipher-suites>
 const MODERN_TLS_CIPHERS: &str = concat!(
@@ -105,14 +102,6 @@ const SETTINGS_ORDER: [SettingsOrder; 8] = [
 ];
 
 const OKHTTP_WINDOW_SIZE: u32 = 16 * 1024 * 1024;
-
-#[derive(Debug, Deserialize)]
-struct VersionJson {
-    #[serde(alias = "appVersion", alias = "version")]
-    app_version: String,
-    #[serde(alias = "buildNumber", alias = "build")]
-    build_number: String,
-}
 
 #[derive(Debug)]
 struct VersionInfo {

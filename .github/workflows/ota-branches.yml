@@ -1,9 +1,6 @@
 name: Publish OTA Branches
 
 on:
-  pull:
-    branches:
-      - development
   workflow_dispatch:
     inputs:
       channel:
