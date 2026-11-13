@@ -9,7 +9,7 @@ const DEFAULT_APP_VERSION: &str = "26.24.0.195444";
 const DEFAULT_BUILD_NUMBER: &str = "195444";
 const TIMEZONE: &str = "Europe/Madrid";
 const VERSION_FILE_URL: &str =
-    "https://raw.githubusercontent.com/imaoreo/free-grind/main/version.json";
+    "https://raw.githubusercontent.com/gustarmartins/GrindrPlus/refs/heads/master/version.json";
 
 /// References <https://opengrind.org/grindr-api/security-headers#cipher-suites>
 const MODERN_TLS_CIPHERS: &str = concat!(
