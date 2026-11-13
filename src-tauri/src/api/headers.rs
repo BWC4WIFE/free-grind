@@ -284,7 +284,8 @@ pub fn build_headers(
     if let Ok(value) = HeaderValue::from_str(&user_agent) {
         headers.push((HeaderName::from_static("user-agent"), value));
     }
-
+#[cfg(debug_assertions)]
+eprintln!("[HTTP] Grindr User-Agent: {user_agent}");
     // 7. L-Locale
     let (l_locale, accept_language) = locale_info();
     if let Ok(value) = HeaderValue::from_str(l_locale) {
