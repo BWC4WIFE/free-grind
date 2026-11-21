@@ -105,3 +105,6 @@
 
 [2026-11-22 06:35] - Task: Fix DB merge/import failures (data_pull_log schema mismatch, FK enforcement, table specs vs real chatDb.ts schemas)
 - Modified: `src-tauri/src/commands/backup.rs`
+
+[2026-11-22 06:44] - Task: Fix new regression test fixture (disable FK enforcement on source fixture connection)
+- Modified: `src-tauri/src/commands/backup.rs`

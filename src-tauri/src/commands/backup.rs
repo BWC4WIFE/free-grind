@@ -3104,6 +3104,9 @@ mod tests {
         let src = Connection::open(&src_db).unwrap();
         init_backup_test_schema(&src);
         ensure_optional_directory_tables(&src).unwrap();
+        // Bundled SQLite enables FK enforcement by default; the fixture needs a
+        // dangling reference to mimic an external DB with a foreign key.
+        src.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         src.execute_batch(
             r#"
             CREATE TABLE extra_fk (
