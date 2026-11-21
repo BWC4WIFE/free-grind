@@ -102,3 +102,6 @@
 [2026-11-18 02:02] - Task: Add numeric ownerId normalization, raw SQLite export, DB polling, local DB browser, and table preview viewer in UI
 - Modified: `src/services/backupRestore.ts`
 - Modified: `src/pages/app/SettingsDataPage.tsx`
+
+[2026-11-22 06:35] - Task: Fix DB merge/import failures (data_pull_log schema mismatch, FK enforcement, table specs vs real chatDb.ts schemas)
+- Modified: `src-tauri/src/commands/backup.rs`

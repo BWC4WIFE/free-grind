@@ -277,26 +277,22 @@ const EXPORT_TABLES: &[TableSpec] = &[
         name: "profile_snapshots",
         primary_key: "profile_id",
         category: "chat_messages",
-        columns: &[
-            "profile_id",
-            "display_name",
-            "primary_image_hash",
-            "snapshot_json",
-            "captured_at",
-        ],
+        columns: &["profile_id", "data", "updated_at"],
         blob_columns: &[],
     },
     TableSpec {
         name: "block_events",
-        primary_key: "profile_id",
+        primary_key: "id",
         category: "chat_messages",
         columns: &[
+            "id",
             "profile_id",
-            "direction",
+            "conversation_id",
+            "event_type",
+            "timestamp",
             "display_name",
-            "primary_image_hash",
-            "first_detected_at",
-            "last_detected_at",
+            "avatar_media_hash",
+            "created_at",
         ],
         blob_columns: &[],
     },
@@ -304,44 +300,29 @@ const EXPORT_TABLES: &[TableSpec] = &[
         name: "hidden_profiles",
         primary_key: "profile_id",
         category: "chat_messages",
-        columns: &["profile_id", "hidden_at", "reason"],
+        columns: &["profile_id", "display_name", "avatar_media_hash", "hidden_at"],
         blob_columns: &[],
     },
     TableSpec {
         name: "downloaded_media",
-        primary_key: "media_hash",
+        primary_key: "identifier",
         category: "media_albums",
         columns: &[
-            "media_hash",
-            "source_url",
+            "identifier",
+            "platform",
+            "album_id",
+            "byte_size",
             "mime_type",
-            "width",
-            "height",
-            "size_bytes",
-            "data_base64",
-            "fetched_at",
+            "kind",
+            "saved_at",
         ],
-        blob_columns: &["data_base64"],
+        blob_columns: &[],
     },
     TableSpec {
         name: "drawer_media_usage",
-        primary_key: "key",
+        primary_key: "media_id",
         category: "media_albums",
-        columns: &[
-            "key",
-            "kind",
-            "media_id",
-            "media_hash",
-            "album_id",
-            "content_id",
-            "url",
-            "mime_type",
-            "width",
-            "height",
-            "use_count",
-            "last_used_at",
-            "first_used_at",
-        ],
+        columns: &["media_id", "send_count", "updated_at"],
         blob_columns: &[],
     },
     TableSpec {
@@ -350,13 +331,14 @@ const EXPORT_TABLES: &[TableSpec] = &[
         category: "chat_messages",
         columns: &[
             "id",
-            "pulled_at",
-            "target_owner_id",
             "source_owner_id",
+            "target_owner_id",
             "source_format",
-            "source_name",
+            "source_label",
+            "categories_json",
             "tables_json",
             "rows_imported",
+            "pulled_at",
         ],
         blob_columns: &[],
     },
@@ -619,29 +601,26 @@ fn build_upsert_sql(table: &TableSpec) -> String {
             ("conversations", "source_owner_id") | ("messages", "source_owner_id") => {
                 format!("{c} = COALESCE(NULLIF({t}.{c}, ''), excluded.{c})")
             }
-            ("profile_snapshots", "display_name" | "primary_image_hash") => {
-                format!("{c} = COALESCE(NULLIF(excluded.{c}, ''), profile_snapshots.{c})")
+            ("profile_snapshots", "data") => {
+                "data = CASE WHEN excluded.updated_at >= profile_snapshots.updated_at THEN excluded.data ELSE profile_snapshots.data END".to_owned()
             }
-            ("profile_snapshots", "snapshot_json") => {
-                "snapshot_json = CASE WHEN excluded.captured_at >= profile_snapshots.captured_at THEN excluded.snapshot_json ELSE profile_snapshots.snapshot_json END".to_owned()
+            ("profile_snapshots", "updated_at") => {
+                "updated_at = MAX(profile_snapshots.updated_at, excluded.updated_at)".to_owned()
             }
-            ("profile_snapshots", "captured_at") => {
-                "captured_at = MAX(profile_snapshots.captured_at, excluded.captured_at)".to_owned()
-            }
-            ("block_events", "first_detected_at") => {
-                "first_detected_at = MIN(block_events.first_detected_at, excluded.first_detected_at)".to_owned()
-            }
-            ("block_events", "last_detected_at") => {
-                "last_detected_at = MAX(block_events.last_detected_at, excluded.last_detected_at)".to_owned()
-            }
-            ("block_events", "display_name" | "primary_image_hash") => {
+            ("block_events", "display_name" | "avatar_media_hash") => {
                 format!("{c} = COALESCE(NULLIF(excluded.{c}, ''), block_events.{c})")
             }
-            ("drawer_media_usage", "use_count" | "last_used_at") => {
+            ("hidden_profiles", "display_name" | "avatar_media_hash") => {
+                format!("{c} = COALESCE(NULLIF(excluded.{c}, ''), hidden_profiles.{c})")
+            }
+            ("hidden_profiles", "hidden_at") => {
+                "hidden_at = MAX(hidden_profiles.hidden_at, excluded.hidden_at)".to_owned()
+            }
+            ("drawer_media_usage", "send_count" | "updated_at") => {
                 format!("{c} = MAX(drawer_media_usage.{c}, excluded.{c})")
             }
-            ("drawer_media_usage", "first_used_at") => {
-                "first_used_at = MIN(drawer_media_usage.first_used_at, excluded.first_used_at)".to_owned()
+            ("downloaded_media", "saved_at") => {
+                "saved_at = MAX(downloaded_media.saved_at, excluded.saved_at)".to_owned()
             }
             (_, col) if table.blob_columns.contains(&col) => {
                 format!("{col} = COALESCE(NULLIF(excluded.{col}, ''), {t}.{col})")
@@ -822,7 +801,7 @@ fn remap_row_for_combine(
                 );
             }
         }
-        "conversation_meta" | "media_files" | "sexual_health_encounters" => {
+        "conversation_meta" | "media_files" | "sexual_health_encounters" | "block_events" => {
             if let Some(ref old_c) = old_conv {
                 let new_c = resolve_conv(old_c, None);
                 row_map.insert("conversation_id".to_string(), Value::String(new_c));
@@ -995,58 +974,49 @@ fn ensure_optional_directory_tables(conn: &Connection) -> Result<(), AppError> {
         );
         CREATE TABLE IF NOT EXISTS profile_snapshots (
             profile_id TEXT PRIMARY KEY,
-            display_name TEXT,
-            primary_image_hash TEXT,
-            snapshot_json TEXT NOT NULL,
-            captured_at INTEGER NOT NULL
+            data TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS block_events (
-            profile_id TEXT PRIMARY KEY,
-            direction TEXT NOT NULL,
+            id TEXT PRIMARY KEY,
+            profile_id TEXT,
+            conversation_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
             display_name TEXT,
-            primary_image_hash TEXT,
-            first_detected_at INTEGER NOT NULL,
-            last_detected_at INTEGER NOT NULL
+            avatar_media_hash TEXT,
+            created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS hidden_profiles (
             profile_id TEXT PRIMARY KEY,
-            hidden_at INTEGER NOT NULL,
-            reason TEXT NOT NULL DEFAULT 'hidden'
+            display_name TEXT,
+            avatar_media_hash TEXT,
+            hidden_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS downloaded_media (
-            media_hash TEXT PRIMARY KEY,
-            source_url TEXT NOT NULL,
+            identifier TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            album_id TEXT,
+            byte_size INTEGER NOT NULL,
             mime_type TEXT,
-            width INTEGER,
-            height INTEGER,
-            size_bytes INTEGER NOT NULL,
-            data_base64 TEXT NOT NULL,
-            fetched_at INTEGER NOT NULL
+            kind TEXT,
+            saved_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS drawer_media_usage (
-            key TEXT PRIMARY KEY,
-            kind TEXT NOT NULL,
-            media_id TEXT,
-            media_hash TEXT,
-            album_id TEXT,
-            content_id TEXT,
-            url TEXT,
-            mime_type TEXT,
-            width INTEGER,
-            height INTEGER,
-            use_count INTEGER NOT NULL DEFAULT 1,
-            last_used_at INTEGER NOT NULL,
-            first_used_at INTEGER NOT NULL
+            media_id INTEGER PRIMARY KEY,
+            send_count INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS data_pull_log (
             id TEXT PRIMARY KEY,
-            pulled_at INTEGER NOT NULL,
-            target_owner_id TEXT NOT NULL,
             source_owner_id TEXT,
+            target_owner_id TEXT,
             source_format TEXT NOT NULL,
-            source_name TEXT NOT NULL,
+            source_label TEXT,
+            categories_json TEXT NOT NULL,
             tables_json TEXT NOT NULL,
-            rows_imported INTEGER NOT NULL DEFAULT 0
+            rows_imported INTEGER NOT NULL,
+            pulled_at INTEGER NOT NULL
         );
         "#,
     )?;
@@ -1185,6 +1155,7 @@ fn record_pull_log(
     source_owner_id: Option<i64>,
     source_format: &str,
     source_name: &str,
+    categories: &[String],
     imported_tables: &[String],
     rows_imported: u64,
 ) -> Result<(), AppError> {
@@ -1197,17 +1168,19 @@ fn record_pull_log(
         source_owner_id.map_or_else(|| "shared".to_owned(), |v| v.to_string())
     );
     let tables_json = serde_json::to_string(imported_tables)?;
+    let categories_json = serde_json::to_string(categories)?;
     tx.execute(
-        "INSERT OR REPLACE INTO data_pull_log (id, pulled_at, target_owner_id, source_owner_id, source_format, source_name, tables_json, rows_imported) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT OR REPLACE INTO data_pull_log (id, source_owner_id, target_owner_id, source_format, source_label, categories_json, tables_json, rows_imported, pulled_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             id,
-            pulled_at,
-            target_owner_id.to_string(),
             source_owner_id.map(|v| v.to_string()),
+            target_owner_id.to_string(),
             source_format,
             source_name,
+            categories_json,
             tables_json,
             rows_imported as i64,
+            pulled_at,
         ],
     )?;
     Ok(())
@@ -2078,7 +2051,7 @@ where
         .unwrap_or_default();
 
     let mut dst_conn = Connection::open(db_path)?;
-    dst_conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    dst_conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF;")?;
     ensure_optional_directory_tables(&dst_conn)?;
     let partner_to_conv_id = if manifest_owner != owner_user_id {
         load_existing_partner_map(&dst_conn)
@@ -2221,6 +2194,7 @@ where
         detected_owner,
         "sqlite",
         &source_name,
+        categories,
         &imported_table_names,
         total_rows_imported,
     )?;
@@ -2287,7 +2261,7 @@ where
     let selected_tables = select_tables_for_operation(categories, tables);
 
     let mut conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF;")?;
     ensure_optional_directory_tables(&conn)?;
     let partner_to_conv_id = if manifest_owner != owner_user_id {
         load_existing_partner_map(&conn)
@@ -2409,6 +2383,7 @@ where
         Some(manifest_owner),
         "zip",
         &source_name,
+        categories,
         &imported_table_names,
         total_rows_imported,
     )?;
@@ -3015,8 +2990,8 @@ mod tests {
             );
             INSERT INTO known_profiles (profile_id, display_name, primary_image_hash, is_favorite, updated_at)
             VALUES ('555', 'Jordan', 'hash_jordan', 1, 2000);
-            INSERT INTO profile_snapshots (profile_id, display_name, primary_image_hash, snapshot_json, captured_at)
-            VALUES ('555', 'Jordan', 'hash_jordan', '{"about":"hi"}', 2000);
+            INSERT INTO profile_snapshots (profile_id, data, updated_at)
+            VALUES ('555', '{"about":"hi"}', 2000);
             "#,
         )
         .unwrap();
@@ -3117,5 +3092,102 @@ mod tests {
         assert_eq!(known_src.as_deref(), Some("100"));
         assert_eq!(nick, "Gym Buddy");
         assert_eq!(log_count, 1);
+    }
+
+    #[test]
+    fn import_works_with_app_created_schemas_and_foreign_key_extra_tables() {
+        let dir = TestDir::new("real-schema-fk");
+        let src_db = dir.path().join("chat-100.sqlite3");
+        let dst_db = dir.path().join("chat-200.sqlite3");
+        let zip_path = dir.path().join("real.zip");
+
+        let src = Connection::open(&src_db).unwrap();
+        init_backup_test_schema(&src);
+        ensure_optional_directory_tables(&src).unwrap();
+        src.execute_batch(
+            r#"
+            CREATE TABLE extra_fk (
+                id INTEGER PRIMARY KEY,
+                profile_ref INTEGER REFERENCES profile(id)
+            );
+            INSERT INTO extra_fk (id, profile_ref) VALUES (1, 42);
+            INSERT INTO block_events (id, profile_id, conversation_id, event_type, timestamp, display_name, avatar_media_hash, created_at)
+            VALUES ('b1', '555', '100:555', 'blocked', 3000, 'Jordan', 'h1', 3000);
+            INSERT INTO downloaded_media (identifier, platform, album_id, byte_size, mime_type, kind, saved_at)
+            VALUES ('d1', 'windows', NULL, 10, 'image/jpeg', 'photo', 3000);
+            INSERT INTO drawer_media_usage (media_id, send_count, updated_at) VALUES (7, 3, 3000);
+            INSERT INTO hidden_profiles (profile_id, display_name, avatar_media_hash, hidden_at)
+            VALUES ('555', 'Jordan', 'h1', 3000);
+            "#,
+        )
+        .unwrap();
+        drop(src);
+
+        // Destination mirrors the schema created by chatDb.ts, which uses
+        // `source_label` / `categories_json` in data_pull_log.
+        let dst = Connection::open(&dst_db).unwrap();
+        init_backup_test_schema(&dst);
+        dst.execute_batch(
+            r#"
+            CREATE TABLE data_pull_log (
+                id TEXT PRIMARY KEY,
+                source_owner_id TEXT,
+                target_owner_id TEXT,
+                source_format TEXT NOT NULL,
+                source_label TEXT,
+                categories_json TEXT NOT NULL,
+                tables_json TEXT NOT NULL,
+                rows_imported INTEGER NOT NULL,
+                pulled_at INTEGER NOT NULL
+            );
+            CREATE TABLE block_events (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT,
+                conversation_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                display_name TEXT,
+                avatar_media_hash TEXT,
+                created_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        drop(dst);
+
+        let all: Vec<String> = ALL_CATEGORY_IDS.iter().map(|s| (*s).to_owned()).collect();
+
+        // ZIP path
+        export_backup_to_path(&src_db, 100, &zip_path, &all, |_| {}).unwrap();
+        let zip_outcome = import_backup_from_path(&dst_db, 200, &zip_path, &all, |_| {}).unwrap();
+        assert!(zip_outcome.ok);
+
+        // SQLite path including a table with a dangling FOREIGN KEY
+        let tables = vec!["block_events".to_owned(), "extra_fk".to_owned()];
+        let sqlite_outcome = import_backup_from_path_with_options(
+            &dst_db,
+            200,
+            &src_db,
+            &all,
+            Some(&tables),
+            None,
+            |_| {},
+        )
+        .unwrap();
+        assert!(sqlite_outcome.ok);
+
+        let verify = Connection::open(&dst_db).unwrap();
+        let logs: i64 = verify
+            .query_row("SELECT COUNT(*) FROM data_pull_log", [], |r| r.get(0))
+            .unwrap();
+        let blocks: i64 = verify
+            .query_row("SELECT COUNT(*) FROM block_events", [], |r| r.get(0))
+            .unwrap();
+        let fk_rows: i64 = verify
+            .query_row("SELECT COUNT(*) FROM extra_fk", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(logs, 2);
+        assert_eq!(blocks, 1);
+        assert_eq!(fk_rows, 1);
     }
 }
