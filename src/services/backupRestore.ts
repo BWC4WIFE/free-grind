@@ -62,7 +62,7 @@ export interface LocalDatabaseEntry {
 	sizeBytes: number;
 	modifiedAt?: number | null;
 	ownerUserId?: number | null;
-	kind: "account" | "default" | "shared";
+	kind: "account" | "default" | "shared" | "master";
 }
 
 export interface TablePreviewResult {
@@ -214,4 +214,8 @@ export function previewTableRows(options: {
 		limit: options.limit ?? 50,
 		offset: options.offset ?? 0,
 	});
+}
+
+export function syncMasterDatabase(): Promise<ImportBackupResult> {
+	return invoke("sync_master_database");
 }

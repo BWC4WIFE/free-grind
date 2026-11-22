@@ -622,6 +622,9 @@ fn build_upsert_sql(table: &TableSpec) -> String {
             ("downloaded_media", "saved_at") => {
                 "saved_at = MAX(downloaded_media.saved_at, excluded.saved_at)".to_owned()
             }
+            ("settings", "value") => {
+                "value = CASE WHEN settings.key = 'locationPreferences' AND settings.value IS NOT NULL AND settings.value != '' THEN settings.value ELSE excluded.value END".to_owned()
+            }
             (_, col) if table.blob_columns.contains(&col) => {
                 format!("{col} = COALESCE(NULLIF(excluded.{col}, ''), {t}.{col})")
             }
@@ -1697,7 +1700,9 @@ pub fn list_local_databases(app: AppHandle) -> Result<Vec<LocalDatabaseEntry>, A
         let owner_user_id = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .ok()
             .and_then(|conn| infer_sqlite_owner(&conn, &path));
-        let kind = if file_name.starts_with("chat-") && owner_user_id.is_some() {
+        let kind = if file_name == "master.sqlite3" {
+            "master".to_owned()
+        } else if file_name.starts_with("chat-") && owner_user_id.is_some() {
             "account".to_owned()
         } else if file_name == "chat.sqlite3" {
             "default".to_owned()
@@ -2415,6 +2420,227 @@ pub fn import_backup_from_file(
             let _ = app.emit(IMPORT_PROGRESS_EVENT, progress);
         },
     )
+}
+
+fn ensure_master_schema(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS conversations (
+            conversation_id TEXT PRIMARY KEY,
+            other_profile_id TEXT,
+            name TEXT,
+            participants_json TEXT NOT NULL,
+            last_activity_timestamp INTEGER,
+            unread_count INTEGER NOT NULL DEFAULT 0,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            muted INTEGER NOT NULL DEFAULT 0,
+            favorite INTEGER NOT NULL DEFAULT 0,
+            preview_json TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            archived_reason TEXT,
+            archived_at INTEGER,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            last_seen_in_inbox_at INTEGER,
+            source_owner_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS conversation_meta (
+            conversation_id TEXT PRIMARY KEY,
+            last_read_timestamp INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            message_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            sender_id INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            type TEXT,
+            chat1_type TEXT,
+            body_json TEXT,
+            unsent INTEGER NOT NULL DEFAULT 0,
+            local_history INTEGER NOT NULL DEFAULT 0,
+            reply_to_message_id TEXT,
+            reply_preview_json TEXT,
+            reactions_json TEXT,
+            source_owner_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS media_files (
+            media_key TEXT PRIMARY KEY,
+            conversation_id TEXT,
+            message_id TEXT,
+            kind TEXT NOT NULL,
+            mime_type TEXT,
+            data_base64 TEXT NOT NULL,
+            view_once INTEGER NOT NULL DEFAULT 0,
+            size_bytes INTEGER,
+            fetch_status TEXT NOT NULL DEFAULT 'ok',
+            fetched_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS albums (
+            album_id TEXT PRIMARY KEY,
+            owner_profile_id TEXT,
+            album_name TEXT,
+            conversation_id TEXT,
+            shared_via_message_id TEXT,
+            preview_cover_base64 TEXT,
+            preview_cover_mime_type TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS album_media (
+            content_id TEXT PRIMARY KEY,
+            album_id TEXT NOT NULL,
+            content_type TEXT,
+            data_base64 TEXT,
+            thumb_data_base64 TEXT,
+            remaining_views INTEGER,
+            is_viewable INTEGER,
+            fetched_at INTEGER,
+            position INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS avatars (
+            media_hash TEXT PRIMARY KEY,
+            data_base64 TEXT NOT NULL,
+            mime_type TEXT,
+            fetched_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS saved_phrases (
+            phrase TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS saved_locations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            geohash TEXT NOT NULL,
+            lat REAL NOT NULL,
+            lon REAL NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sexual_health_prep_doses (
+            id TEXT PRIMARY KEY,
+            taken_at INTEGER NOT NULL,
+            scheme TEXT NOT NULL,
+            dose_role TEXT,
+            note TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sexual_health_encounters (
+            id TEXT PRIMARY KEY,
+            occurred_at INTEGER NOT NULL,
+            profile_id TEXT,
+            display_name TEXT,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            note TEXT,
+            conversation_id TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sexual_health_appointments (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            scheduled_at INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            location TEXT,
+            note TEXT,
+            completed_at INTEGER,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sexual_health_sti_tests (
+            id TEXT PRIMARY KEY,
+            tested_at INTEGER NOT NULL,
+            test_type TEXT NOT NULL,
+            result TEXT NOT NULL,
+            note TEXT,
+            created_at INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    ensure_optional_directory_tables(conn)?;
+    Ok(())
+}
+
+fn sync_master_database_in_dir(dir: &Path) -> Result<ImportOutcome, AppError> {
+    let master_path = dir.join("master.sqlite3");
+    {
+        let master_conn = Connection::open(&master_path)?;
+        master_conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+        ensure_master_schema(&master_conn)?;
+    }
+
+    let mut source_files: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let Ok(item) = entry else {
+            continue;
+        };
+        let path = item.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if (name.starts_with("chat-") || name == "chat.sqlite3") && name.ends_with(".sqlite3") {
+            source_files.push(path);
+        }
+    }
+    source_files.sort();
+
+    let master_tables: Vec<String> = vec![
+        "conversations".to_owned(),
+        "conversation_meta".to_owned(),
+        "messages".to_owned(),
+        "media_files".to_owned(),
+        "albums".to_owned(),
+        "album_media".to_owned(),
+        "avatars".to_owned(),
+        "saved_phrases".to_owned(),
+        "saved_locations".to_owned(),
+        "block_events".to_owned(),
+        "hidden_profiles".to_owned(),
+        "profile_snapshots".to_owned(),
+        "known_profiles".to_owned(),
+        "profile_photo_history".to_owned(),
+    ];
+    let cats: Vec<String> = vec!["chat_messages".to_owned(), "media_albums".to_owned()];
+
+    let mut total_rows: u64 = 0;
+    for src_path in source_files {
+        let owner_id = Connection::open_with_flags(&src_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()
+            .and_then(|conn| infer_sqlite_owner(&conn, &src_path))
+            .unwrap_or(0);
+        let outcome = import_sqlite_from_path(
+            &master_path,
+            owner_id,
+            &src_path,
+            &cats,
+            Some(&master_tables),
+            None,
+            |_| {},
+        )?;
+        total_rows += outcome.rows_imported.unwrap_or(0);
+    }
+
+    Ok(ImportOutcome {
+        ok: true,
+        rows_imported: Some(total_rows),
+        error: None,
+    })
+}
+
+#[tauri::command]
+pub fn sync_master_database(app: AppHandle) -> Result<ImportOutcome, AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Backup(format!("failed to resolve app data dir: {e}")))?;
+    std::fs::create_dir_all(&dir)?;
+    sync_master_database_in_dir(&dir)
 }
 
 #[cfg(test)]
@@ -3192,5 +3418,93 @@ mod tests {
         assert_eq!(logs, 2);
         assert_eq!(blocks, 1);
         assert_eq!(fk_rows, 1);
+    }
+
+    #[test]
+    fn master_db_sync_and_location_preferences_protection() {
+        let dir = TestDir::new("master-sync");
+        let db1 = dir.path().join("chat-100.sqlite3");
+        let db2 = dir.path().join("chat-200.sqlite3");
+
+        let c1 = Connection::open(&db1).unwrap();
+        init_backup_test_schema(&c1);
+        ensure_optional_directory_tables(&c1).unwrap();
+        c1.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES ('locationPreferences', '{"geohash":"loc100"}');
+            INSERT INTO conversations (
+                conversation_id, other_profile_id, name, participants_json,
+                last_activity_timestamp, unread_count, pinned, muted, favorite,
+                preview_json, archived, archived_reason, archived_at, hidden,
+                last_seen_in_inbox_at, created_at, updated_at
+            ) VALUES ('100:555', '555', 'Sam', '["100","555"]', 1500, 0, 0, 0, 1, NULL, 0, NULL, NULL, 0, NULL, 1000, 1500);
+            INSERT INTO known_profiles (profile_id, display_name, primary_image_hash, is_favorite, updated_at)
+            VALUES ('555', 'Sam', 'h_sam', 1, 1500);
+            "#,
+        )
+        .unwrap();
+        drop(c1);
+
+        let c2 = Connection::open(&db2).unwrap();
+        init_backup_test_schema(&c2);
+        ensure_optional_directory_tables(&c2).unwrap();
+        c2.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES ('locationPreferences', '{"geohash":"loc200"}');
+            INSERT INTO conversations (
+                conversation_id, other_profile_id, name, participants_json,
+                last_activity_timestamp, unread_count, pinned, muted, favorite,
+                preview_json, archived, archived_reason, archived_at, hidden,
+                last_seen_in_inbox_at, created_at, updated_at
+            ) VALUES ('200:555', '555', 'Sam', '["200","555"]', 2500, 0, 0, 0, 0, NULL, 0, NULL, NULL, 0, NULL, 2000, 2500);
+            INSERT INTO known_profiles (profile_id, display_name, primary_image_hash, is_favorite, updated_at)
+            VALUES ('777', 'Alex', 'h_alex', 0, 2500);
+            INSERT INTO profile_snapshots (profile_id, data, updated_at)
+            VALUES ('777', '{"about":"alex bio"}', 2500);
+            "#,
+        )
+        .unwrap();
+        drop(c2);
+
+        // Cross-account import with settings category must preserve destination's locationPreferences.
+        let settings_cat = vec!["settings".to_owned()];
+        let outcome = import_backup_from_path_with_options(
+            &db2,
+            200,
+            &db1,
+            &settings_cat,
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
+        assert!(outcome.ok);
+        let verify2 = Connection::open(&db2).unwrap();
+        let kept_loc: String = verify2
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'locationPreferences'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_loc, "{\"geohash\":\"loc200\"}");
+        drop(verify2);
+
+        // Master DB sync keeps conversations from both accounts distinct and consolidates profiles/snapshots.
+        let master_outcome = sync_master_database_in_dir(dir.path()).unwrap();
+        assert!(master_outcome.ok);
+        let master = Connection::open(dir.path().join("master.sqlite3")).unwrap();
+        let conv_count: i64 = master
+            .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
+            .unwrap();
+        let known_count: i64 = master
+            .query_row("SELECT COUNT(*) FROM known_profiles", [], |r| r.get(0))
+            .unwrap();
+        let snap_count: i64 = master
+            .query_row("SELECT COUNT(*) FROM profile_snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(conv_count, 2);
+        assert_eq!(known_count, 2);
+        assert_eq!(snap_count, 1);
     }
 }

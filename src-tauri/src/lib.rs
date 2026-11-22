@@ -186,6 +186,7 @@ pub fn run() {
                 commands::backup::poll_database_tables,
                 commands::backup::list_local_databases,
                 commands::backup::preview_table_rows,
+                commands::backup::sync_master_database,
             ])
             .build(context)
             .expect("error while running tauri application");
@@ -277,6 +278,7 @@ pub fn run() {
                 commands::backup::poll_database_tables,
                 commands::backup::list_local_databases,
                 commands::backup::preview_table_rows,
+                commands::backup::sync_master_database,
             ])
             .run(context)
             .expect("error while running tauri application");

@@ -21,6 +21,7 @@ import { getIncognitoMode, isRecordProfileViewsEnabled } from "../../utils/priva
 import { appLog } from "../../utils/logger";
 import { coarsenGeohash } from "../../utils/geohash";
 import { getThumbImageUrl, validateMediaHash } from "../../utils/media";
+import { getActiveChatDbFileName } from "../chatDb";
 
 const GET_PROFILES_CHUNK_IDS = 30;
 const SUPPORTED_CASCADE_ITEM_TYPES = new Set([
@@ -106,11 +107,12 @@ function normalizePrimaryImageUrl(
 }
 
 export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, options?: { defaultValue?: string }) => string) {
-	let lastStoredServerGeohash: string | null = null;
+	let lastStoredServerLocationKey: string | null = null;
 
 	const syncServerLocation = async (geohash: string, force = false): Promise<void> => {
 		const coarse = safeCoarsenGeohash(geohash);
-		if (!force && coarse === lastStoredServerGeohash) {
+		const locationKey = `${getActiveChatDbFileName()}:${coarse}`;
+		if (!force && locationKey === lastStoredServerLocationKey) {
 			return;
 		}
 		try {
@@ -119,7 +121,7 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 				body: { geohash: coarse },
 			});
 			if (response.status >= 200 && response.status < 300) {
-				lastStoredServerGeohash = coarse;
+				lastStoredServerLocationKey = locationKey;
 			} else {
 				appLog.warn(`[browse] PUT /v4/location returned status ${response.status}`);
 			}
@@ -289,12 +291,10 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 				? safeCoarsenGeohash(params.exploreGeohash)
 				: undefined;
 
-			if (!coarseExploreGeohash) {
-				await syncServerLocation(
-					coarseGeohash,
-					Boolean(params.filters?.favorites && !params.page),
-				);
-			}
+			await syncServerLocation(
+				coarseGeohash,
+				Boolean(!coarseExploreGeohash && params.filters?.favorites && !params.page),
+			);
 
 			// Cascade rejects nearbyGeoHash + exploreGeoHash together with
 			// CAS-4001 — exploring apparently relies on the server's own
@@ -358,7 +358,7 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 			await assertSuccess(response, t("api.errors.load_browse_profiles"));
 			const parsed = cascadeResponseSchema.parse(await parseJsonSafe(response));
 			if (!coarseExploreGeohash && !params.filters?.favorites) {
-				lastStoredServerGeohash = coarseGeohash;
+				lastStoredServerLocationKey = `${getActiveChatDbFileName()}:${coarseGeohash}`;
 			}
 			const entries: Array<{ card: BrowseCard; needsHydration: boolean }> = [];
 			const hydrateIdSet = new Set<string>();

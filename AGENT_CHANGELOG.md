@@ -108,3 +108,16 @@
 
 [2026-11-22 06:44] - Task: Fix new regression test fixture (disable FK enforcement on source fixture connection)
 - Modified: `src-tauri/src/commands/backup.rs`
+
+[2026-11-22 19:02] - Task: Enforce per-account location lock across account switches and disable auto-location drift
+- Modified: `src/contexts/PreferencesContext.tsx`
+- Modified: `src/services/api/profileMethods.ts`
+- Modified: `src/pages/app/GridPage.tsx`
+
+[2026-11-22 19:06] - Task: Add shared live Master DB (master.sqlite3) dual-write/union-read, sync_master_database command, and locationPreferences merge protection
+- Modified: `src/services/chatDb.ts`
+- Modified: `src-tauri/src/commands/backup.rs`
+- Modified: `src-tauri/src/lib.rs`
+- Modified: `src/services/backupRestore.ts`
+- Modified: `src/contexts/AuthContext.tsx`
+- Modified: `src/pages/app/SettingsDataPage.tsx`

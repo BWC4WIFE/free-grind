@@ -49,6 +49,8 @@ import { guardAgainstClosedPool } from "./sqlitePoolGuard";
 // before login, and as the migration source for existing installs.
 const LEGACY_CHAT_DB_FILENAME = "chat.sqlite3";
 const LEGACY_CHAT_DB = `sqlite:${LEGACY_CHAT_DB_FILENAME}`;
+const MASTER_CHAT_DB_FILENAME = "master.sqlite3";
+const MASTER_CHAT_DB = `sqlite:${MASTER_CHAT_DB_FILENAME}`;
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 const SQLITE_LOCK_RETRY_DELAYS_MS = [30, 80, 180, 350] as const;
 
@@ -184,20 +186,32 @@ type DownloadedMediaRow = {
 
 let dbPromise: Promise<Database> | null = null;
 let writeQueue: Promise<void> = Promise.resolve();
+let masterDbPromise: Promise<Database> | null = null;
+let masterWriteQueue: Promise<void> = Promise.resolve();
 
-async function getDb(): Promise<Database> {
-	if (!dbPromise) {
-		dbPromise = (async () => {
-			const db = guardAgainstClosedPool(await Database.load(activeChatDbName), "chat-db");
-			try {
-				await db.execute("PRAGMA journal_mode = WAL");
-				await db.execute("PRAGMA synchronous = NORMAL");
-				await db.execute(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
-			} catch (error) {
-				appLog.warn("[chat-db] failed to set pragmas", error);
+async function initChatDbSchema(db: Database, label: string): Promise<void> {
+	try {
+		await db.execute("PRAGMA journal_mode = WAL");
+		await db.execute("PRAGMA synchronous = NORMAL");
+		await db.execute(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	} catch (error) {
+		appLog.warn(`[${label}] failed to set pragmas`, error);
+	}
+
+	await executeWithLockRetryOnQueue(
+		db,
+		"init-tables",
+		(fn) => {
+			if (label === "master-db") {
+				const current = masterWriteQueue.then(fn, fn);
+				masterWriteQueue = current.then(() => undefined, () => undefined);
+				return current;
 			}
-
-			await executeWithLockRetry(db, "init-tables", async () => {
+			const current = writeQueue.then(fn, fn);
+			writeQueue = current.then(() => undefined, () => undefined);
+			return current;
+		},
+		async () => {
 				await db.execute(`
 					CREATE TABLE IF NOT EXISTS conversations (
 						conversation_id TEXT PRIMARY KEY,
@@ -581,13 +595,31 @@ async function getDb(): Promise<Database> {
 						pulled_at INTEGER NOT NULL
 					)
 				`);
-			});
+			}, label);
+}
 
+async function getDb(): Promise<Database> {
+	if (!dbPromise) {
+		dbPromise = (async () => {
+			const db = guardAgainstClosedPool(await Database.load(activeChatDbName), "chat-db");
+			await initChatDbSchema(db, "chat-db");
 			return db;
 		})();
 	}
 
 	return dbPromise;
+}
+
+async function getMasterDb(): Promise<Database> {
+	if (!masterDbPromise) {
+		masterDbPromise = (async () => {
+			const db = guardAgainstClosedPool(await Database.load(MASTER_CHAT_DB), "master-db");
+			await initChatDbSchema(db, "master-db");
+			return db;
+		})();
+	}
+
+	return masterDbPromise;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -608,10 +640,12 @@ function isSqliteLockedError(error: unknown): boolean {
 	return /database is locked|\(code:\s*(5|517)\)/i.test(error);
 }
 
-async function executeWithLockRetry(
+async function executeWithLockRetryOnQueue(
 	_db: Database,
 	label: string,
+	enqueue: (fn: () => Promise<void>) => Promise<void>,
 	run: () => Promise<void>,
+	logPrefix = "chat-db",
 ): Promise<void> {
 	const queuedRun = async () => {
 		const maxAttempts = SQLITE_LOCK_RETRY_DELAYS_MS.length + 1;
@@ -620,7 +654,7 @@ async function executeWithLockRetry(
 			try {
 				await run();
 				if (attempt > 1) {
-					appLog.warn("[chat-db] recovered from sqlite lock", { label, attempt });
+					appLog.warn(`[${logPrefix}] recovered from sqlite lock`, { label, attempt });
 				}
 				return;
 			} catch (error) {
@@ -630,7 +664,7 @@ async function executeWithLockRetry(
 				}
 
 				const delayMs = SQLITE_LOCK_RETRY_DELAYS_MS[attempt - 1] ?? 400;
-				appLog.warn("[chat-db] sqlite lock during write, retrying", {
+				appLog.warn(`[${logPrefix}] sqlite lock during write, retrying`, {
 					label,
 					attempt,
 					delayMs,
@@ -640,9 +674,48 @@ async function executeWithLockRetry(
 		}
 	};
 
-	const current = writeQueue.then(queuedRun, queuedRun);
-	writeQueue = current.then(() => undefined, () => undefined);
-	await current;
+	await enqueue(queuedRun);
+}
+
+async function executeWithLockRetry(
+	db: Database,
+	label: string,
+	run: () => Promise<void>,
+): Promise<void> {
+	await executeWithLockRetryOnQueue(
+		db,
+		label,
+		(fn) => {
+			const current = writeQueue.then(fn, fn);
+			writeQueue = current.then(() => undefined, () => undefined);
+			return current;
+		},
+		run,
+		"chat-db",
+	);
+}
+
+function mirrorToMasterDb(
+	label: string,
+	run: (masterDb: Database) => Promise<void>,
+): void {
+	void getMasterDb()
+		.then((mdb) =>
+			executeWithLockRetryOnQueue(
+				mdb,
+				label,
+				(fn) => {
+					const current = masterWriteQueue.then(fn, fn);
+					masterWriteQueue = current.then(() => undefined, () => undefined);
+					return current;
+				},
+				() => run(mdb),
+				"master-db",
+			),
+		)
+		.catch((error) => {
+			appLog.warn(`[master-db] ${label} mirror failed`, error);
+		});
 }
 
 export async function initChatDb(): Promise<void> {
@@ -800,12 +873,18 @@ export async function upsertConversation(
 		);
 
 		if (otherProfileId) {
-			await writeKnownProfileTx(db, {
+			const sourceProfileId = getActiveDbOwnerId();
+			const knownEntry: KnownProfileUpsertInput = {
 				profileId: otherProfileId,
 				displayName: entry.data.name || null,
 				primaryImageHash: partnerImageHash,
 				isFavorite: entry.data.favorite ? true : undefined,
-			}, now);
+				sourceProfileId,
+			};
+			await writeKnownProfileTx(db, knownEntry, now);
+			mirrorToMasterDb("upsert-conversation-known-profile", async (mdb) => {
+				await writeKnownProfileTx(mdb, knownEntry, now);
+			});
 		}
 	});
 }
@@ -1138,22 +1217,34 @@ export async function listHiddenProfiles(): Promise<StoredHiddenProfile[]> {
  * Callers should only save here for an actually-accessible profile, never
  * the blocked/gone stub, so a stub response never overwrites a good snapshot.
  */
+async function writeProfileSnapshotTx(
+	db: Database,
+	profileId: string,
+	json: string,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO profile_snapshots (profile_id, data, updated_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT(profile_id) DO UPDATE SET
+			data = CASE WHEN excluded.updated_at >= profile_snapshots.updated_at THEN excluded.data ELSE profile_snapshots.data END,
+			updated_at = MAX(profile_snapshots.updated_at, excluded.updated_at)
+		`,
+		[profileId, json, now],
+	);
+}
+
 export async function saveProfileSnapshot(profileId: string, json: string): Promise<void> {
 	const db = await getDb();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "save-profile-snapshot", async () => {
-		await db.execute(
-			`
-			INSERT INTO profile_snapshots (profile_id, data, updated_at)
-			VALUES ($1, $2, $3)
-			ON CONFLICT(profile_id) DO UPDATE SET
-				data = excluded.data,
-				updated_at = excluded.updated_at
-			`,
-			[profileId, json, now],
-		);
+		await writeProfileSnapshotTx(db, profileId, json, now);
 	});
+	mirrorToMasterDb("save-profile-snapshot", (mdb) =>
+		writeProfileSnapshotTx(mdb, profileId, json, now),
+	);
 }
 
 export type StoredProfileSnapshot = {
@@ -1163,16 +1254,25 @@ export type StoredProfileSnapshot = {
 };
 
 export async function getProfileSnapshot(profileId: string): Promise<StoredProfileSnapshot | null> {
-	const db = await getDb();
-	const rows = await db.select<{ profile_id: string; data: string; updated_at: number }[]>(
-		"SELECT profile_id, data, updated_at FROM profile_snapshots WHERE profile_id = $1",
-		[profileId],
-	);
-	const row = rows[0];
-	if (!row) {
+	const query = "SELECT profile_id, data, updated_at FROM profile_snapshots WHERE profile_id = $1";
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<{ profile_id: string; data: string; updated_at: number }[]>(
+			query,
+			[profileId],
+		),
+		getMasterDb()
+			.then((mdb) =>
+				mdb.select<{ profile_id: string; data: string; updated_at: number }[]>(query, [profileId]),
+			)
+			.catch(() => []),
+	]);
+	const a = activeRows[0];
+	const m = masterRows[0];
+	const best = !a ? m : !m ? a : m.updated_at > a.updated_at ? m : a;
+	if (!best) {
 		return null;
 	}
-	return { profileId: row.profile_id, data: row.data, updatedAt: row.updated_at };
+	return { profileId: best.profile_id, data: best.data, updatedAt: best.updated_at };
 }
 
 /**
@@ -1736,50 +1836,51 @@ function rowToStoredMediaFile(row: MediaFileRow): StoredMediaFile {
 	};
 }
 
+async function writeMediaFileTx(
+	db: Database,
+	input: MediaFileUpsertInput,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO media_files (
+			media_key, conversation_id, message_id, kind, mime_type,
+			data_base64, view_once, size_bytes, fetch_status, fetched_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT(media_key) DO UPDATE SET
+			conversation_id = excluded.conversation_id,
+			message_id = COALESCE(excluded.message_id, media_files.message_id),
+			kind = excluded.kind,
+			mime_type = excluded.mime_type,
+			data_base64 = excluded.data_base64,
+			view_once = excluded.view_once,
+			size_bytes = excluded.size_bytes,
+			fetch_status = excluded.fetch_status,
+			fetched_at = excluded.fetched_at
+		`,
+		[
+			input.mediaKey,
+			input.conversationId,
+			input.messageId,
+			input.kind,
+			input.mimeType,
+			input.dataBase64,
+			input.viewOnce ? 1 : 0,
+			input.sizeBytes,
+			input.fetchStatus,
+			now,
+		],
+	);
+}
+
 export async function upsertMediaFile(input: MediaFileUpsertInput): Promise<void> {
 	const db = await getDb();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-media-file", async () => {
-		await db.execute(
-			`
-			INSERT INTO media_files (
-				media_key, conversation_id, message_id, kind, mime_type,
-				data_base64, view_once, size_bytes, fetch_status, fetched_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-			ON CONFLICT(media_key) DO UPDATE SET
-				conversation_id = excluded.conversation_id,
-				-- A null incoming message_id (reply-quote/reaction preview
-				-- captures deliberately pass null — see replyMediaStore.ts —
-				-- so they don't misattribute quoted content as the quoting
-				-- message's own media) must never erase a message_id this
-				-- mediaKey already correctly resolved to; content-hash-based
-				-- mediaKeys are resend-invariant, so the same key can get a
-				-- preview capture and the real message's capture in either
-				-- order.
-				message_id = COALESCE(excluded.message_id, media_files.message_id),
-				kind = excluded.kind,
-				mime_type = excluded.mime_type,
-				data_base64 = excluded.data_base64,
-				view_once = excluded.view_once,
-				size_bytes = excluded.size_bytes,
-				fetch_status = excluded.fetch_status,
-				fetched_at = excluded.fetched_at
-			`,
-			[
-				input.mediaKey,
-				input.conversationId,
-				input.messageId,
-				input.kind,
-				input.mimeType,
-				input.dataBase64,
-				input.viewOnce ? 1 : 0,
-				input.sizeBytes,
-				input.fetchStatus,
-				now,
-			],
-		);
+		await writeMediaFileTx(db, input, now);
 	});
+	mirrorToMasterDb("upsert-media-file", (mdb) => writeMediaFileTx(mdb, input, now));
 }
 
 export async function getMediaFile(
@@ -1790,8 +1891,15 @@ export async function getMediaFile(
 		"SELECT * FROM media_files WHERE media_key = $1",
 		[mediaKey],
 	);
-	const row = rows[0];
-	return row ? rowToStoredMediaFile(row) : null;
+	if (rows[0]) {
+		return rowToStoredMediaFile(rows[0]);
+	}
+	const masterRows = await getMasterDb()
+		.then((mdb) =>
+			mdb.select<MediaFileRow[]>("SELECT * FROM media_files WHERE media_key = $1", [mediaKey]),
+		)
+		.catch(() => []);
+	return masterRows[0] ? rowToStoredMediaFile(masterRows[0]) : null;
 }
 
 /**
@@ -1809,8 +1917,18 @@ export async function getMediaFileByMessageId(
 		"SELECT * FROM media_files WHERE message_id = $1 LIMIT 1",
 		[messageId],
 	);
-	const row = rows[0];
-	return row ? rowToStoredMediaFile(row) : null;
+	if (rows[0]) {
+		return rowToStoredMediaFile(rows[0]);
+	}
+	const masterRows = await getMasterDb()
+		.then((mdb) =>
+			mdb.select<MediaFileRow[]>(
+				"SELECT * FROM media_files WHERE message_id = $1 LIMIT 1",
+				[messageId],
+			),
+		)
+		.catch(() => []);
+	return masterRows[0] ? rowToStoredMediaFile(masterRows[0]) : null;
 }
 
 /** Removes one cached media entry (e.g. a single drawer item the user deleted). */
@@ -1891,34 +2009,66 @@ function rowToStoredAlbum(row: AlbumRow): StoredAlbum {
 	};
 }
 
+async function writeAlbumTx(
+	db: Database,
+	input: AlbumUpsertInput,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO albums (
+			album_id, owner_profile_id, album_name, conversation_id,
+			shared_via_message_id, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $6)
+		ON CONFLICT(album_id) DO UPDATE SET
+			owner_profile_id = COALESCE(excluded.owner_profile_id, owner_profile_id),
+			album_name = COALESCE(excluded.album_name, album_name),
+			conversation_id = COALESCE(excluded.conversation_id, conversation_id),
+			shared_via_message_id = COALESCE(excluded.shared_via_message_id, shared_via_message_id),
+			updated_at = excluded.updated_at
+		`,
+		[
+			input.albumId,
+			input.ownerProfileId,
+			input.albumName,
+			input.conversationId,
+			input.sharedViaMessageId,
+			now,
+		],
+	);
+}
+
 export async function upsertAlbum(input: AlbumUpsertInput): Promise<void> {
 	const db = await getDb();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-album", async () => {
-		await db.execute(
-			`
-			INSERT INTO albums (
-				album_id, owner_profile_id, album_name, conversation_id,
-				shared_via_message_id, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $6)
-			ON CONFLICT(album_id) DO UPDATE SET
-				owner_profile_id = COALESCE(excluded.owner_profile_id, owner_profile_id),
-				album_name = COALESCE(excluded.album_name, album_name),
-				conversation_id = COALESCE(excluded.conversation_id, conversation_id),
-				shared_via_message_id = COALESCE(excluded.shared_via_message_id, shared_via_message_id),
-				updated_at = excluded.updated_at
-			`,
-			[
-				input.albumId,
-				input.ownerProfileId,
-				input.albumName,
-				input.conversationId,
-				input.sharedViaMessageId,
-				now,
-			],
-		);
+		await writeAlbumTx(db, input, now);
 	});
+	mirrorToMasterDb("upsert-album", (mdb) => writeAlbumTx(mdb, input, now));
+}
+
+async function writeAlbumPreviewCoverTx(
+	db: Database,
+	albumId: string,
+	base64: string,
+	mimeType: string | null,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO albums (
+			album_id, owner_profile_id, album_name, conversation_id,
+			shared_via_message_id, preview_cover_base64, preview_cover_mime_type,
+			created_at, updated_at
+		) VALUES ($1, NULL, NULL, NULL, NULL, $2, $3, $4, $4)
+		ON CONFLICT(album_id) DO UPDATE SET
+			preview_cover_base64 = excluded.preview_cover_base64,
+			preview_cover_mime_type = excluded.preview_cover_mime_type,
+			updated_at = excluded.updated_at
+		`,
+		[albumId, base64, mimeType, now],
+	);
 }
 
 /**
@@ -1938,39 +2088,63 @@ export async function upsertAlbumPreviewCover(
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-album-preview-cover", async () => {
-		await db.execute(
-			`
-			INSERT INTO albums (
-				album_id, owner_profile_id, album_name, conversation_id,
-				shared_via_message_id, preview_cover_base64, preview_cover_mime_type,
-				created_at, updated_at
-			) VALUES ($1, NULL, NULL, NULL, NULL, $2, $3, $4, $4)
-			ON CONFLICT(album_id) DO UPDATE SET
-				preview_cover_base64 = excluded.preview_cover_base64,
-				preview_cover_mime_type = excluded.preview_cover_mime_type,
-				updated_at = excluded.updated_at
-			`,
-			[albumId, base64, mimeType, now],
-		);
+		await writeAlbumPreviewCoverTx(db, albumId, base64, mimeType, now);
 	});
+	mirrorToMasterDb("upsert-album-preview-cover", (mdb) =>
+		writeAlbumPreviewCoverTx(mdb, albumId, base64, mimeType, now),
+	);
+}
+
+function mergeStoredAlbums(primary: StoredAlbum[], secondary: StoredAlbum[]): StoredAlbum[] {
+	const byId = new Map<string, StoredAlbum>();
+	for (const a of [...secondary, ...primary]) {
+		const prev = byId.get(a.albumId);
+		if (!prev) {
+			byId.set(a.albumId, a);
+		} else {
+			byId.set(a.albumId, {
+				...prev,
+				...a,
+				ownerProfileId: a.ownerProfileId ?? prev.ownerProfileId,
+				albumName: a.albumName ?? prev.albumName,
+				conversationId: a.conversationId ?? prev.conversationId,
+				sharedViaMessageId: a.sharedViaMessageId ?? prev.sharedViaMessageId,
+				previewCoverBase64: a.previewCoverBase64 ?? prev.previewCoverBase64,
+				previewCoverMimeType: a.previewCoverMimeType ?? prev.previewCoverMimeType,
+				updatedAt: Math.max(prev.updatedAt, a.updatedAt),
+			});
+		}
+	}
+	return Array.from(byId.values()).sort((x, y) => y.updatedAt - x.updatedAt);
 }
 
 export async function getAllAlbums(): Promise<StoredAlbum[]> {
-	const db = await getDb();
-	const rows = await db.select<AlbumRow[]>(
-		"SELECT * FROM albums ORDER BY updated_at DESC",
+	const query = "SELECT * FROM albums ORDER BY updated_at DESC";
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<AlbumRow[]>(query),
+		getMasterDb()
+			.then((mdb) => mdb.select<AlbumRow[]>(query))
+			.catch(() => []),
+	]);
+	return mergeStoredAlbums(
+		activeRows.map(rowToStoredAlbum),
+		masterRows.map(rowToStoredAlbum),
 	);
-	return rows.map(rowToStoredAlbum);
 }
 
 export async function getAlbum(albumId: string): Promise<StoredAlbum | null> {
-	const db = await getDb();
-	const rows = await db.select<AlbumRow[]>(
-		"SELECT * FROM albums WHERE album_id = $1",
-		[albumId],
+	const query = "SELECT * FROM albums WHERE album_id = $1";
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<AlbumRow[]>(query, [albumId]),
+		getMasterDb()
+			.then((mdb) => mdb.select<AlbumRow[]>(query, [albumId]))
+			.catch(() => []),
+	]);
+	const merged = mergeStoredAlbums(
+		activeRows.map(rowToStoredAlbum),
+		masterRows.map(rowToStoredAlbum),
 	);
-	const row = rows[0];
-	return row ? rowToStoredAlbum(row) : null;
+	return merged[0] ?? null;
 }
 
 /**
@@ -2003,12 +2177,17 @@ export async function getAlbumsForConversation(
 export async function getAlbumsForOwnerProfile(
 	profileId: string,
 ): Promise<StoredAlbum[]> {
-	const db = await getDb();
-	const rows = await db.select<AlbumRow[]>(
-		"SELECT * FROM albums WHERE owner_profile_id = $1 ORDER BY updated_at DESC",
-		[profileId],
+	const query = "SELECT * FROM albums WHERE owner_profile_id = $1 ORDER BY updated_at DESC";
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<AlbumRow[]>(query, [profileId]),
+		getMasterDb()
+			.then((mdb) => mdb.select<AlbumRow[]>(query, [profileId]))
+			.catch(() => []),
+	]);
+	return mergeStoredAlbums(
+		activeRows.map(rowToStoredAlbum),
+		masterRows.map(rowToStoredAlbum),
 	);
-	return rows.map(rowToStoredAlbum);
 }
 
 function rowToStoredAlbumMedia(row: AlbumMediaRow): StoredAlbumMedia {
@@ -2025,57 +2204,109 @@ function rowToStoredAlbumMedia(row: AlbumMediaRow): StoredAlbumMedia {
 	};
 }
 
+async function writeAlbumMediaTx(
+	db: Database,
+	input: AlbumMediaUpsertInput,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO album_media (
+			content_id, album_id, content_type, data_base64, thumb_data_base64,
+			remaining_views, is_viewable, fetched_at, position
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT(content_id) DO UPDATE SET
+			album_id = excluded.album_id,
+			content_type = excluded.content_type,
+			data_base64 = COALESCE(NULLIF(excluded.data_base64, ''), album_media.data_base64),
+			thumb_data_base64 = COALESCE(NULLIF(excluded.thumb_data_base64, ''), album_media.thumb_data_base64),
+			remaining_views = excluded.remaining_views,
+			is_viewable = excluded.is_viewable,
+			fetched_at = excluded.fetched_at,
+			position = COALESCE(excluded.position, album_media.position)
+		`,
+		[
+			input.contentId,
+			input.albumId,
+			input.contentType,
+			input.dataBase64,
+			input.thumbDataBase64,
+			input.remainingViews,
+			input.isViewable == null ? null : input.isViewable ? 1 : 0,
+			now,
+			input.position ?? null,
+		],
+	);
+}
+
 export async function upsertAlbumMedia(input: AlbumMediaUpsertInput): Promise<void> {
 	const db = await getDb();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-album-media", async () => {
-		await db.execute(
-			`
-			INSERT INTO album_media (
-				content_id, album_id, content_type, data_base64, thumb_data_base64,
-				remaining_views, is_viewable, fetched_at, position
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT(content_id) DO UPDATE SET
-				album_id = excluded.album_id,
-				content_type = excluded.content_type,
-				data_base64 = excluded.data_base64,
-				thumb_data_base64 = excluded.thumb_data_base64,
-				remaining_views = excluded.remaining_views,
-				is_viewable = excluded.is_viewable,
-				fetched_at = excluded.fetched_at,
-				position = COALESCE(excluded.position, album_media.position)
-			`,
-			[
-				input.contentId,
-				input.albumId,
-				input.contentType,
-				input.dataBase64,
-				input.thumbDataBase64,
-				input.remainingViews,
-				input.isViewable == null ? null : input.isViewable ? 1 : 0,
-				now,
-				input.position ?? null,
-			],
-		);
+		await writeAlbumMediaTx(db, input, now);
 	});
+	mirrorToMasterDb("upsert-album-media", (mdb) => writeAlbumMediaTx(mdb, input, now));
 }
 
 export async function getAlbumMedia(albumId: string): Promise<StoredAlbumMedia[]> {
-	const db = await getDb();
-	const rows = await db.select<AlbumMediaRow[]>(
+	const query =
 		// Items without a known position (e.g. only captured as a chat-bubble
 		// thumbnail so far) sort after positioned ones rather than scattering
 		// among them.
-		"SELECT * FROM album_media WHERE album_id = $1 ORDER BY position IS NULL, position ASC",
-		[albumId],
-	);
-	return rows.map(rowToStoredAlbumMedia);
+		"SELECT * FROM album_media WHERE album_id = $1 ORDER BY position IS NULL, position ASC";
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<AlbumMediaRow[]>(query, [albumId]),
+		getMasterDb()
+			.then((mdb) => mdb.select<AlbumMediaRow[]>(query, [albumId]))
+			.catch(() => []),
+	]);
+	const byContentId = new Map<string, StoredAlbumMedia>();
+	for (const item of [...masterRows.map(rowToStoredAlbumMedia), ...activeRows.map(rowToStoredAlbumMedia)]) {
+		const prev = byContentId.get(item.contentId);
+		if (!prev) {
+			byContentId.set(item.contentId, item);
+		} else {
+			byContentId.set(item.contentId, {
+				...prev,
+				...item,
+				dataBase64: item.dataBase64 ?? prev.dataBase64,
+				thumbDataBase64: item.thumbDataBase64 ?? prev.thumbDataBase64,
+				position: item.position ?? prev.position,
+			});
+		}
+	}
+	return Array.from(byContentId.values()).sort((a, b) => {
+		if (a.position == null && b.position == null) return 0;
+		if (a.position == null) return 1;
+		if (b.position == null) return -1;
+		return a.position - b.position;
+	});
 }
 
 // ---------------------------------------------------------------------------
 // Avatars
 // ---------------------------------------------------------------------------
+
+async function writeAvatarTx(
+	db: Database,
+	mediaHash: string,
+	dataBase64: string,
+	mimeType: string | null,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO avatars (media_hash, data_base64, mime_type, fetched_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT(media_hash) DO UPDATE SET
+			data_base64 = excluded.data_base64,
+			mime_type = excluded.mime_type,
+			fetched_at = excluded.fetched_at
+		`,
+		[mediaHash, dataBase64, mimeType, now],
+	);
+}
 
 export async function upsertAvatar(
 	mediaHash: string,
@@ -2086,18 +2317,11 @@ export async function upsertAvatar(
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-avatar", async () => {
-		await db.execute(
-			`
-			INSERT INTO avatars (media_hash, data_base64, mime_type, fetched_at)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT(media_hash) DO UPDATE SET
-				data_base64 = excluded.data_base64,
-				mime_type = excluded.mime_type,
-				fetched_at = excluded.fetched_at
-			`,
-			[mediaHash, dataBase64, mimeType, now],
-		);
+		await writeAvatarTx(db, mediaHash, dataBase64, mimeType, now);
 	});
+	mirrorToMasterDb("upsert-avatar", (mdb) =>
+		writeAvatarTx(mdb, mediaHash, dataBase64, mimeType, now),
+	);
 }
 
 export async function getAvatar(mediaHash: string): Promise<StoredAvatar | null> {
@@ -2106,7 +2330,13 @@ export async function getAvatar(mediaHash: string): Promise<StoredAvatar | null>
 		"SELECT * FROM avatars WHERE media_hash = $1",
 		[mediaHash],
 	);
-	const row = rows[0];
+	let row = rows[0];
+	if (!row) {
+		const masterRows = await getMasterDb()
+			.then((mdb) => mdb.select<AvatarRow[]>("SELECT * FROM avatars WHERE media_hash = $1", [mediaHash]))
+			.catch(() => []);
+		row = masterRows[0];
+	}
 	return row
 		? {
 				mediaHash: row.media_hash,
@@ -3002,13 +3232,18 @@ export async function upsertKnownProfiles(
 		return { favoriteHashesToCache: [] };
 	}
 
+	const activeOwnerId = getActiveDbOwnerId();
 	const merged = new Map<string, KnownProfileUpsertInput>();
 	for (const entry of entries) {
 		const id = sanitizeProfileId(entry.profileId);
 		if (!id) continue;
 		const existing = merged.get(id);
 		if (!existing) {
-			merged.set(id, { ...entry, profileId: id });
+			merged.set(id, {
+				...entry,
+				profileId: id,
+				sourceProfileId: entry.sourceProfileId?.trim() || activeOwnerId,
+			});
 		} else {
 			merged.set(id, {
 				profileId: id,
@@ -3019,6 +3254,7 @@ export async function upsertKnownProfiles(
 					...(entry.extraImageHashes ?? []),
 				],
 				isFavorite: entry.isFavorite || existing.isFavorite,
+				sourceProfileId: existing.sourceProfileId || entry.sourceProfileId?.trim() || activeOwnerId,
 			});
 		}
 	}
@@ -3039,17 +3275,27 @@ export async function upsertKnownProfiles(
 			}
 		}
 	});
+	const mergedEntries = Array.from(merged.values());
+	mirrorToMasterDb("upsert-known-profiles", async (mdb) => {
+		for (const entry of mergedEntries) {
+			await writeKnownProfileTx(mdb, entry, now);
+		}
+	});
 
 	const favoriteHashes = new Set<string>();
 	try {
-		const favRows = await db.select<{ profile_id: string }[]>(
-			`
+		const favQuery = `
 			SELECT profile_id FROM known_profiles WHERE is_favorite = 1
 			UNION
 			SELECT other_profile_id AS profile_id FROM conversations WHERE favorite = 1 AND other_profile_id IS NOT NULL
-			`,
-		);
-		const favSet = new Set(favRows.map((r) => r.profile_id));
+			`;
+		const [activeFavRows, masterFavRows] = await Promise.all([
+			db.select<{ profile_id: string }[]>(favQuery),
+			getMasterDb()
+				.then((mdb) => mdb.select<{ profile_id: string }[]>(favQuery))
+				.catch(() => []),
+		]);
+		const favSet = new Set([...activeFavRows, ...masterFavRows].map((r) => r.profile_id));
 		for (const [profileId, hashes] of hashesByProfile) {
 			const entry = merged.get(profileId);
 			if (entry?.isFavorite || favSet.has(profileId)) {
@@ -3065,6 +3311,25 @@ export async function upsertKnownProfiles(
 	return { favoriteHashesToCache: Array.from(favoriteHashes) };
 }
 
+async function writeKnownProfileFavoriteTx(
+	db: Database,
+	id: string,
+	isFavorite: boolean,
+	now: number,
+): Promise<void> {
+	await db.execute(
+		`
+		INSERT INTO known_profiles (
+			profile_id, display_name, primary_image_hash, is_favorite, updated_at
+		) VALUES ($1, NULL, NULL, $2, $3)
+		ON CONFLICT(profile_id) DO UPDATE SET
+			is_favorite = excluded.is_favorite,
+			updated_at = excluded.updated_at
+		`,
+		[id, isFavorite ? 1 : 0, now],
+	);
+}
+
 export async function setKnownProfileFavorite(
 	profileId: string,
 	isFavorite: boolean,
@@ -3074,18 +3339,11 @@ export async function setKnownProfileFavorite(
 	const db = await getDb();
 	const now = Date.now();
 	await executeWithLockRetry(db, "set-known-profile-favorite", async () => {
-		await db.execute(
-			`
-			INSERT INTO known_profiles (
-				profile_id, display_name, primary_image_hash, is_favorite, updated_at
-			) VALUES ($1, NULL, NULL, $2, $3)
-			ON CONFLICT(profile_id) DO UPDATE SET
-				is_favorite = excluded.is_favorite,
-				updated_at = excluded.updated_at
-			`,
-			[id, isFavorite ? 1 : 0, now],
-		);
+		await writeKnownProfileFavoriteTx(db, id, isFavorite, now);
 	});
+	mirrorToMasterDb("set-known-profile-favorite", (mdb) =>
+		writeKnownProfileFavoriteTx(mdb, id, isFavorite, now),
+	);
 }
 
 export async function getProfilePhotoHistory(
@@ -3093,50 +3351,82 @@ export async function getProfilePhotoHistory(
 ): Promise<StoredProfilePhotoHistoryEntry[]> {
 	const id = sanitizeProfileId(profileId);
 	if (!id) return [];
-	const db = await getDb();
-	const rows = await db.select<ProfilePhotoHistoryRow[]>(
-		`
+	const query = `
 		SELECT id, profile_id, image_hash, first_seen_at, last_seen_at, source_profile_id
 		FROM profile_photo_history
 		WHERE profile_id = $1
 		ORDER BY last_seen_at DESC, first_seen_at DESC
-		`,
-		[id],
+		`;
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<ProfilePhotoHistoryRow[]>(query, [id]),
+		getMasterDb()
+			.then((mdb) => mdb.select<ProfilePhotoHistoryRow[]>(query, [id]))
+			.catch(() => []),
+	]);
+	const byId = new Map<string, StoredProfilePhotoHistoryEntry>();
+	for (const r of [...masterRows, ...activeRows]) {
+		const prev = byId.get(r.id);
+		if (!prev) {
+			byId.set(r.id, {
+				id: r.id,
+				profileId: r.profile_id,
+				imageHash: r.image_hash,
+				firstSeenAt: r.first_seen_at,
+				lastSeenAt: r.last_seen_at,
+				sourceProfileId: r.source_profile_id,
+			});
+		} else {
+			byId.set(r.id, {
+				...prev,
+				firstSeenAt: Math.min(prev.firstSeenAt, r.first_seen_at),
+				lastSeenAt: Math.max(prev.lastSeenAt, r.last_seen_at),
+				sourceProfileId: prev.sourceProfileId || r.source_profile_id,
+			});
+		}
+	}
+	return Array.from(byId.values()).sort(
+		(a, b) => b.lastSeenAt - a.lastSeenAt || b.firstSeenAt - a.firstSeenAt,
 	);
-	return rows.map((r) => ({
-		id: r.id,
-		profileId: r.profile_id,
-		imageHash: r.image_hash,
-		firstSeenAt: r.first_seen_at,
-		lastSeenAt: r.last_seen_at,
-		sourceProfileId: r.source_profile_id,
-	}));
 }
 
 export async function getKnownProfileDirectory(): Promise<{
 	byProfileId: Map<string, KnownProfileDirectoryEntry>;
 	byImageHash: Map<string, KnownProfileDirectoryEntry>;
 }> {
+	const knownSql =
+		"SELECT profile_id, display_name, primary_image_hash, is_favorite, source_profile_id, updated_at FROM known_profiles";
+	const convSql =
+		"SELECT other_profile_id, name, participants_json, favorite, updated_at FROM conversations WHERE other_profile_id IS NOT NULL";
+	const historySql =
+		"SELECT id, profile_id, image_hash, first_seen_at, last_seen_at, source_profile_id FROM profile_photo_history ORDER BY last_seen_at DESC";
+	type ConvDirRow = {
+		other_profile_id: string | null;
+		name: string | null;
+		participants_json: string;
+		favorite: number;
+		updated_at: number;
+	};
 	const db = await getDb();
-	const [knownRows, convRows, historyRows] = await Promise.all([
-		db.select<KnownProfileRow[]>(
-			"SELECT profile_id, display_name, primary_image_hash, is_favorite, source_profile_id, updated_at FROM known_profiles",
-		),
-		db.select<
-			{
-				other_profile_id: string | null;
-				name: string | null;
-				participants_json: string;
-				favorite: number;
-				updated_at: number;
-			}[]
-		>(
-			"SELECT other_profile_id, name, participants_json, favorite, updated_at FROM conversations WHERE other_profile_id IS NOT NULL",
-		),
-		db.select<ProfilePhotoHistoryRow[]>(
-			"SELECT id, profile_id, image_hash, first_seen_at, last_seen_at, source_profile_id FROM profile_photo_history ORDER BY last_seen_at DESC",
-		),
+	const [
+		activeKnownRows,
+		activeConvRows,
+		activeHistoryRows,
+		masterKnownRows,
+		masterConvRows,
+		masterHistoryRows,
+	] = await Promise.all([
+		db.select<KnownProfileRow[]>(knownSql),
+		db.select<ConvDirRow[]>(convSql),
+		db.select<ProfilePhotoHistoryRow[]>(historySql),
+		getMasterDb().then((mdb) => mdb.select<KnownProfileRow[]>(knownSql)).catch(() => [] as KnownProfileRow[]),
+		getMasterDb().then((mdb) => mdb.select<ConvDirRow[]>(convSql)).catch(() => [] as ConvDirRow[]),
+		getMasterDb()
+			.then((mdb) => mdb.select<ProfilePhotoHistoryRow[]>(historySql))
+			.catch(() => [] as ProfilePhotoHistoryRow[]),
 	]);
+	const knownRows = [...masterKnownRows, ...activeKnownRows];
+	const convRows = [...masterConvRows, ...activeConvRows];
+	const historyRows = [...masterHistoryRows, ...activeHistoryRows];
 
 	const hashCountByProfile = new Map<string, Set<string>>();
 	const recordProfileHash = (profileId: string, hash: string | null) => {

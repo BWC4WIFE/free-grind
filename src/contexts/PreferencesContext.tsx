@@ -429,21 +429,38 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 	// default useAutoLocation=false and skip auto-location before the real
 	// per-profile value has had a chance to arrive.
 	const { userId, settingsReady } = useAuth();
-	const [isLocationLoaded, setIsLocationLoaded] = useState(false);
+	const [loadedLocationUserId, setLoadedLocationUserId] = useState<number | null>(null);
+	const userIdRef = useRef<number | null>(userId);
+	userIdRef.current = userId;
+	const settingsReadyRef = useRef<boolean>(settingsReady);
+	settingsReadyRef.current = settingsReady;
+	const isLocationLoaded = Boolean(settingsReady && userId != null && loadedLocationUserId === userId);
+
 	useEffect(() => {
-		if (!settingsReady) {
+		if (!settingsReady || userId == null) {
+			setLoadedLocationUserId(null);
+			dispatch({ type: "SET_GEOHASH", payload: null });
+			dispatch({ type: "SET_LOCATION_NAME", payload: null });
+			dispatch({ type: "SET_AUTO_LOCATION", payload: false });
 			return;
 		}
+		const targetUserId = userId;
+		setLoadedLocationUserId(null);
+		dispatch({ type: "SET_GEOHASH", payload: null });
+		dispatch({ type: "SET_LOCATION_NAME", payload: null });
+		dispatch({ type: "SET_AUTO_LOCATION", payload: false });
 		let cancelled = false;
 		void (async () => {
 			const stored = await getSetting<Partial<StoredLocationPrefs>>(LOCATION_SETTINGS_KEY);
-			if (cancelled) {
+			if (cancelled || userIdRef.current !== targetUserId) {
 				return;
 			}
 			dispatch({ type: "SET_GEOHASH", payload: stored?.geohash ?? null });
 			dispatch({ type: "SET_LOCATION_NAME", payload: stored?.locationName ?? null });
-			dispatch({ type: "SET_AUTO_LOCATION", payload: stored?.useAutoLocation ?? false });
-			setIsLocationLoaded(true);
+			// Force useAutoLocation off so background GPS refreshes cannot overwrite
+			// an account's pinned location on launch or account switch.
+			dispatch({ type: "SET_AUTO_LOCATION", payload: false });
+			setLoadedLocationUserId(targetUserId);
 		})();
 		return () => {
 			cancelled = true;
@@ -455,6 +472,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
 	const setPreferences = useCallback(
 		async (newValues: Partial<Preferences>) => {
+			const targetUserId = userIdRef.current;
 			const currentState = stateRef.current;
 			// Get current state to ensure we don't lose values not provided in newValues
 			const preferences: Preferences = {
@@ -605,11 +623,13 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 				newValues.locationName !== undefined ||
 				newValues.useAutoLocation !== undefined
 			) {
-				await setSetting(LOCATION_SETTINGS_KEY, {
-					geohash: preferences.geohash,
-					locationName: preferences.locationName ?? null,
-					useAutoLocation: preferences.useAutoLocation,
-				} satisfies StoredLocationPrefs);
+				if (settingsReadyRef.current && targetUserId != null && userIdRef.current === targetUserId) {
+					await setSetting(LOCATION_SETTINGS_KEY, {
+						geohash: preferences.geohash,
+						locationName: preferences.locationName ?? null,
+						useAutoLocation: false,
+					} satisfies StoredLocationPrefs);
+				}
 			}
 
 			// Persist the rest to localStorage (geohash/locationName/useAutoLocation excluded, see above)
@@ -646,8 +666,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 	);
 
 	const value: PreferencesContextType = {
-		geohash: state.geohash,
-		locationName: state.locationName,
+		geohash: isLocationLoaded ? state.geohash : null,
+		locationName: isLocationLoaded ? state.locationName : null,
 		colorScheme: state.colorScheme,
 		accentColor: state.accentColor,
 		accentContrast: state.accentContrast,
@@ -658,7 +678,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 		developerMode: state.developerMode,
 		showDebugInfo: state.showDebugInfo,
 		testReminderDisabled: state.testReminderDisabled,
-		useAutoLocation: state.useAutoLocation,
+		useAutoLocation: false,
 		rightNowTestMode: state.rightNowTestMode,
 		activeRightNowId: state.activeRightNowId,
 		activeRightNowExpiresAt: state.activeRightNowExpiresAt,

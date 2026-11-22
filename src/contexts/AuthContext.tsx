@@ -18,6 +18,7 @@ import {
 } from "./auth-context";
 import { appLog } from "../utils/logger";
 import { setActiveChatDbUser, migrateLegacySettingsIfNeeded } from "../services/chatDb";
+import { syncMasterDatabase } from "../services/backupRestore";
 import { setActiveInterestStoreUser } from "../services/interestViewsStore";
 import { clearAllCaches } from "../pages/app/gridpage/cache";
 import { loadAutomationCache } from "../utils/autoblock";
@@ -31,6 +32,8 @@ import { syncSavedPhrasesFromServer } from "../services/savedPhrases";
 const AUTH_USER_ID_STORAGE_KEY = "fg-user-id";
 const PUSH_TOKEN_STORAGE_KEY = "fg-fcm-token";
 const PUSH_TOKEN_SYNCED_STORAGE_KEY = "fg-fcm-token-synced";
+
+let hasSyncedMasterDbThisLaunch = false;
 
 // Grindr's API returns this generic validation error for several rejected-login
 // cases (wrong credentials, malformed/expired token) rather than a specific one,
@@ -421,6 +424,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 				loadPrivacyCache(),
 				loadSeenCache(),
 			]);
+			if (state.userId != null && !hasSyncedMasterDbThisLaunch) {
+				hasSyncedMasterDbThisLaunch = true;
+				void syncMasterDatabase().catch((err) =>
+					appLog.warn("[master-db] initial sync failed", err),
+				);
+			}
 			dispatch({ type: "SET_SETTINGS_READY", payload: true });
 		})();
 	}, [state.userId, state.isLoading, queryClient, apiFunctions]);

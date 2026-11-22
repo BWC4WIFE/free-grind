@@ -123,28 +123,40 @@ export function GridPage() {
 	// Kept out of PreferencesContext and out of localStorage on purpose —
 	// this is meant to be temporary, so it only survives sessionStorage
 	// (same tab, until the app fully restarts), not a real preference.
-	const [exploreLocation, setExploreLocationRaw] = useState<ExploreLocation>(() => {
-		if (typeof window === "undefined") return null;
-		try {
-			const raw = sessionStorage.getItem(EXPLORE_LOCATION_STORAGE_KEY);
-			return raw ? (JSON.parse(raw) as ExploreLocation) : null;
-		} catch {
-			return null;
+	const getExploreStorageKey = useCallback(
+		(uid: number | null) => (uid != null ? `${EXPLORE_LOCATION_STORAGE_KEY}:${uid}` : EXPLORE_LOCATION_STORAGE_KEY),
+		[],
+	);
+	const [exploreLocation, setExploreLocationRaw] = useState<ExploreLocation>(null);
+	useEffect(() => {
+		setCards([]);
+		setNextPage(null);
+		setIsLoadingCards(true);
+		if (typeof window === "undefined" || userId == null) {
+			setExploreLocationRaw(null);
+			return;
 		}
-	});
+		try {
+			const raw = sessionStorage.getItem(getExploreStorageKey(userId));
+			setExploreLocationRaw(raw ? (JSON.parse(raw) as ExploreLocation) : null);
+		} catch {
+			setExploreLocationRaw(null);
+		}
+	}, [userId, getExploreStorageKey]);
 	const setExploreLocation = useCallback((next: ExploreLocation) => {
 		setExploreLocationRaw(next);
-		if (typeof window === "undefined") return;
+		if (typeof window === "undefined" || userId == null) return;
 		try {
+			const key = getExploreStorageKey(userId);
 			if (next) {
-				sessionStorage.setItem(EXPLORE_LOCATION_STORAGE_KEY, JSON.stringify(next));
+				sessionStorage.setItem(key, JSON.stringify(next));
 			} else {
-				sessionStorage.removeItem(EXPLORE_LOCATION_STORAGE_KEY);
+				sessionStorage.removeItem(key);
 			}
 		} catch {
 			// ignore — worst case explore resets on next load
 		}
-	}, []);
+	}, [userId, getExploreStorageKey]);
 	// Mirror explore mode into the app-wide context so RootLayout/NavBar can
 	// swap the whole app's accent to EXPLORE_COLOR while it's active, the same
 	// way isRightNow does for --right-now. Reset on unmount so navigating away
@@ -620,7 +632,7 @@ export function GridPage() {
 			showLoadingState?: boolean;
 			overrideGeohash?: string;
 		} = {}) => {
-			if (isLoadingPreferences) {
+			if (!settingsReady || isLoadingPreferences) {
 				return;
 			}
 
@@ -734,6 +746,7 @@ export function GridPage() {
 		},
 		[
 			geohash,
+			settingsReady,
 			isLoadingPreferences,
 			browseCacheKey,
 			browseRequestFilters,

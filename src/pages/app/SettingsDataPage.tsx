@@ -40,6 +40,7 @@ import {
 	pollDatabaseTables,
 	previewTableRows,
 	readFileInChunks,
+	syncMasterDatabase,
 	type BackupCategoryId,
 	type DatabasePollResult,
 	type LocalDatabaseEntry,
@@ -201,6 +202,7 @@ export function SettingsDataPage() {
 	const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
 	const [isImporting, setIsImporting] = useState(false);
+	const [isSyncingMaster, setIsSyncingMaster] = useState(false);
 	const [isResetting, setIsResetting] = useState(false);
 	const [showResetConfirm, setShowResetConfirm] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -651,6 +653,26 @@ export function SettingsDataPage() {
 		}
 	};
 
+	const handleSyncMasterDb = async () => {
+		setIsSyncingMaster(true);
+		try {
+			const res = await syncMasterDatabase();
+			if (res.ok) {
+				toast.success(`Master database (master.sqlite3) synced (${res.rowsImported} rows).`);
+				if (showDbBrowser) {
+					setLocalDbs(await listLocalDatabases());
+				}
+			} else {
+				toast.error("Failed to sync master database.");
+			}
+		} catch (error) {
+			appLog.error("[SettingsDataPage] sync master db failed", error);
+			toast.error(getErrorMessage(error, "Failed to sync master database."));
+		} finally {
+			setIsSyncingMaster(false);
+		}
+	};
+
 	const pollBrowserDb = async (targetPath: string | null) => {
 		setBrowsedDbPath(targetPath);
 		setIsPollingBrowser(true);
@@ -1047,6 +1069,31 @@ export function SettingsDataPage() {
 									<Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--text-muted)]" />
 								) : (
 									<Download className="h-4 w-4 shrink-0 text-[var(--text-muted)] opacity-50" />
+								)}
+							</button>
+							<button
+								type="button"
+								onClick={() => void handleSyncMasterDb()}
+								disabled={isSyncingMaster}
+								className={`flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors ${isSyncingMaster ? "opacity-50" : "hover:bg-[var(--surface-2)] active:bg-[var(--surface-2)]"}`}
+							>
+								<div className="shrink-0 rounded-2xl bg-purple-500/15 p-2.5 text-purple-400">
+									<Database className="h-5 w-5" />
+								</div>
+								<div className="min-w-0 flex-1">
+									<p className="text-sm font-semibold leading-snug">
+										{t("data_backup.sync_master_db", { defaultValue: "Sync Master Database (master.sqlite3)" })}
+									</p>
+									<p className="mt-0.5 text-xs leading-snug text-[var(--text-muted)]">
+										{t("data_backup.sync_master_db_desc", {
+											defaultValue: "Consolidates known profiles, photo history, snapshots, albums, avatars, and chats across all accounts without mixing locations.",
+										})}
+									</p>
+								</div>
+								{isSyncingMaster ? (
+									<Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--text-muted)]" />
+								) : (
+									<RefreshCw className="h-4 w-4 shrink-0 text-[var(--text-muted)] opacity-50" />
 								)}
 							</button>
 							<button
