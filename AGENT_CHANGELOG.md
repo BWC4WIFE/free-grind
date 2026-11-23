@@ -133,3 +133,7 @@
 
 [2026-11-23 23:16] - Task: Add fixed dispatch-enabled JustIPA.yml workflow to Free-Open
 - Created: `.github/workflows/JustIPA.yml`
+
+[2026-11-23 23:43] - Task: Incorporate Dismiss button and app-wide Tauri unregisterListener error guards from upstream PR #238
+- Modified: `src/utils/crashOverlay.ts`
+- Modified: `vite.config.mjs`
