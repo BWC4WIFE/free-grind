@@ -130,3 +130,6 @@
 - Modified: `.github/workflows/Build-iOS.yml`
 - Modified: `.github/workflows/build-fork.yml`
 - Modified: `.github/workflows/WinDoze.yml`
+
+[2026-11-23 23:16] - Task: Add fixed dispatch-enabled JustIPA.yml workflow to Free-Open
+- Created: `.github/workflows/JustIPA.yml`
