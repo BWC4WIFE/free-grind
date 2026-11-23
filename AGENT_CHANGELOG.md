@@ -121,3 +121,7 @@
 - Modified: `src/services/backupRestore.ts`
 - Modified: `src/contexts/AuthContext.tsx`
 - Modified: `src/pages/app/SettingsDataPage.tsx`
+
+[2026-11-23 18:04] - Task: Prevent iOS/iPadOS unregisterListener unhandled rejection and strip redundant ?token= query param causing WS HTTP 414
+- Modified: `src/services/tauriWebSocket.ts`
+- Modified: `src-tauri/src/api/websocket.rs`

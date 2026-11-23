@@ -24,6 +24,37 @@ type WsEvent =
 const WS_EVENT_NAME = "grindr-ws://event";
 
 let activeInstance: TauriWebSocket | null = null;
+let sharedListenerPromise: Promise<UnlistenFn> | null = null;
+
+function safeUnlisten(unlisten: UnlistenFn | null | undefined): void {
+	if (!unlisten) return;
+	try {
+		Promise.resolve(unlisten()).catch((error) => {
+			appLog.warn("[chat-ws:tauri] async unlisten failed", error);
+		});
+	} catch (error) {
+		appLog.warn("[chat-ws:tauri] unlisten failed", error);
+	}
+}
+
+function ensureSharedListener(): Promise<UnlistenFn> {
+	if (!sharedListenerPromise) {
+		sharedListenerPromise = listen<WsEvent>(WS_EVENT_NAME, (event) => {
+			activeInstance?.handleSharedEvent(event.payload);
+		}).catch((error) => {
+			sharedListenerPromise = null;
+			throw error;
+		});
+	}
+	return sharedListenerPromise;
+}
+
+export function resetSharedWsListenerForTest(): void {
+	if (!sharedListenerPromise) return;
+	const current = sharedListenerPromise;
+	sharedListenerPromise = null;
+	void current.then((unlisten) => safeUnlisten(unlisten)).catch(() => {});
+}
 
 export class TauriWebSocket {
 	static readonly CONNECTING = 0;
@@ -45,7 +76,6 @@ export class TauriWebSocket {
 
 	readonly url: string;
 
-	private unlisten: UnlistenFn | null = null;
 	private closed = false;
 
 	constructor(url: string) {
@@ -77,19 +107,11 @@ export class TauriWebSocket {
 
 	private async bootstrap() {
 		try {
-			const unlisten = await listen<WsEvent>(WS_EVENT_NAME, (event) => {
-				this.handleEvent(event.payload);
-			});
+			await ensureSharedListener();
 
 			if (this.closed) {
-				// Closed while the listener registration was still in flight —
-				// unregister immediately instead of leaking it for the rest of
-				// the app's lifetime. dispatchClose already ran once and won't
-				// run again, so cleanupListener() would never call this.
-				unlisten();
 				return;
 			}
-			this.unlisten = unlisten;
 
 			appLog.debug("[chat-ws:tauri] invoking ws_connect");
 			await invoke("ws_connect", { url: this.url });
@@ -101,7 +123,8 @@ export class TauriWebSocket {
 		}
 	}
 
-	private handleEvent(event: WsEvent) {
+	/** Routes events from the single persistent bridge listener to the active instance. */
+	handleSharedEvent(event: WsEvent) {
 		if (this.closed && event.kind !== "close") {
 			appLog.debug("[chat-ws:tauri] ignoring event after close", event.kind);
 			return;
@@ -154,27 +177,15 @@ export class TauriWebSocket {
 		}
 		this.closed = true;
 		this.readyState = TauriWebSocket.CLOSED;
-		this.cleanupListener();
+		if (activeInstance === this) {
+			activeInstance = null;
+		}
 		try {
 			this.onclose?.(
 				new CloseEvent("close", { code, reason, wasClean: code === 1000 }),
 			);
 		} catch (callbackError) {
 			appLog.warn("[chat-ws:tauri] onclose callback threw", callbackError);
-		}
-		if (activeInstance === this) {
-			activeInstance = null;
-		}
-	}
-
-	private cleanupListener() {
-		if (this.unlisten) {
-			try {
-				this.unlisten();
-			} catch (error) {
-				appLog.warn("[chat-ws:tauri] unlisten failed", error);
-			}
-			this.unlisten = null;
 		}
 	}
 

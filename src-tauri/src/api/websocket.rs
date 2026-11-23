@@ -109,26 +109,24 @@ pub async fn ws_connect(
     let user_agent = client.user_agent().to_owned();
     let cookies = client.cookie_header_for_base_url();
 
-    // Ensure the URL uses the current fresh token, replacing any stale token from the frontend.
-    // This ensures that if REST just refreshed the token, the WS connection uses it immediately.
+    // Grindr's WS handshake authenticates via Authorization and User-Agent headers;
+    // keeping a large session JWT in `?token=` can trigger HTTP 414 URI Too Long.
     let final_url = match url::Url::parse(&url) {
         Ok(mut parsed_url) => {
-            let params: Vec<(String, String)> = parsed_url.query_pairs().into_owned().collect();
-            let mut query = parsed_url.query_pairs_mut();
-            query.clear();
-            let mut token_seen = false;
-            for (k, v) in params {
-                if k == "token" {
-                    query.append_pair("token", &session_id);
-                    token_seen = true;
-                } else {
+            let remaining: Vec<(String, String)> = parsed_url
+                .query_pairs()
+                .filter(|(k, _)| k != "token")
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            if remaining.is_empty() {
+                parsed_url.set_query(None);
+            } else {
+                let mut query = parsed_url.query_pairs_mut();
+                query.clear();
+                for (k, v) in remaining {
                     query.append_pair(&k, &v);
                 }
             }
-            if !token_seen {
-                query.append_pair("token", &session_id);
-            }
-            drop(query);
             parsed_url.to_string()
         }
         Err(_) => url.clone(),
