@@ -1,11 +1,28 @@
-name: Build Windows and Android
+name: Build Application (Windows, Android, iOS)
 
 on:
-  push:
-    branches:
-      - development
-      - Free-Open
   workflow_dispatch:
+    inputs:
+      build_windows:
+        description: "Build Windows installer (.exe)"
+        required: false
+        default: true
+        type: boolean
+      build_android:
+        description: "Build Android APK (.apk)"
+        required: false
+        default: true
+        type: boolean
+      build_ios:
+        description: "Build iOS IPA (.ipa)"
+        required: false
+        default: true
+        type: boolean
+      publish_release:
+        description: "Publish artifacts to a GitHub Release"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -16,6 +33,7 @@ concurrency:
 
 jobs:
   build-windows:
+    if: ${{ inputs.build_windows != false }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +73,7 @@ jobs:
           if-no-files-found: error
 
   build-android:
+    if: ${{ inputs.build_android != false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -149,8 +168,19 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  build-ios:
+    needs:
+      - build-windows
+      - build-android
+    if: ${{ always() && inputs.build_ios != false && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && (needs.build-android.result == 'success' || needs.build-android.result == 'skipped') }}
+    uses: ./.github/workflows/Build-iOS.yml
+
   publish-release:
-    needs: [build-windows, build-android]
+    needs:
+      - build-windows
+      - build-android
+      - build-ios
+    if: ${{ always() && inputs.publish_release != false && (needs.build-windows.result == 'success' || needs.build-android.result == 'success' || needs.build-ios.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -166,4 +196,4 @@ jobs:
           gh release create "$tag" artifacts/*/* \
             --target "$GITHUB_SHA" \
             --title "Free Grind fork build ${GITHUB_RUN_NUMBER}" \
-            --notes "Windows installer and Android APK built from ${GITHUB_SHA}."
+            --notes "Artifacts built from ${GITHUB_SHA} (Windows=${{ needs.build-windows.result }}, Android=${{ needs.build-android.result }}, iOS=${{ needs.build-ios.result }})."

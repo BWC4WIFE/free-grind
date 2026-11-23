@@ -125,3 +125,8 @@
 [2026-11-23 18:04] - Task: Prevent iOS/iPadOS unregisterListener unhandled rejection and strip redundant ?token= query param causing WS HTTP 414
 - Modified: `src/services/tauriWebSocket.ts`
 - Modified: `src-tauri/src/api/websocket.rs`
+
+[2026-11-23 22:53] - Task: Convert GitHub Actions builds to dispatch-only and integrate Build-iOS.yml into build-fork.yml with per-platform toggles
+- Modified: `.github/workflows/Build-iOS.yml`
+- Modified: `.github/workflows/build-fork.yml`
+- Modified: `.github/workflows/WinDoze.yml`
