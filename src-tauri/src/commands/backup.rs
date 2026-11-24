@@ -3023,7 +3023,7 @@ pub fn global_search_master(
                     ) {
                         items.push(GlobalSearchResultItem {
                             kind: "profile".to_owned(),
-                            profile_id: Some(pid),
+                            profile_id: Some(pid.clone()),
                             conversation_id: None,
                             title: name.unwrap_or_else(|| "Unknown Profile".to_owned()),
                             subtitle: Some(format!("Profile ID: {}", pid)),
@@ -3106,7 +3106,7 @@ pub fn global_search_master(
                         ) {
                             items.push(GlobalSearchResultItem {
                                 kind: "note".to_owned(),
-                                profile_id: Some(pid),
+                                profile_id: Some(pid.clone()),
                                 conversation_id: None,
                                 title: notes.unwrap_or_else(|| "Note".to_owned()),
                                 subtitle: None,

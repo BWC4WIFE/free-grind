@@ -53,3 +53,6 @@
 - Modified: `src/services/chatDb.ts`
 - Modified: `src/utils/crashOverlay.ts`
 - Modified: `src/pages/app/GridPage.tsx`
+
+[2026-11-25 02:35] - Task: Fix Rust E0382 borrow of moved value pid in global_search_master
+- Modified: `src-tauri/src/commands/backup.rs`
