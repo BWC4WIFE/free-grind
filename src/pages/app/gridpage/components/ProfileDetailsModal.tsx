@@ -35,7 +35,10 @@ import { getProfileImageUrl } from "../../../../utils/media";
 import { resolveAvatarSrc } from "../../../../services/avatarStore";
 import { getForbiddenWords, setForbiddenWords } from "../../../../utils/autoblock";
 import { ProfileImage } from "../../../../components/ui/profile-image";
+import { Avatar } from "../../../../components/ui/avatar";
 import { PromptDialog } from "../../../../components/ui/prompt-dialog";
+import type { ProfileCrossAccountProvenance } from "../../../../services/backupRestore";
+import type { FormattedAccountLabel } from "../../../../utils/accountLabels";
 import freegrindLogo from "../../../../images/freegrind-logo.webp";
 import { FreeGrindBadge } from "../../../../components/FreeGrindBadge";
 import { usePreferences } from "../../../../contexts/PreferencesContext";
@@ -123,6 +126,11 @@ type ProfileDetailsModalProps = {
 	onNextProfile?: () => void;
 	/** Set while the parent shows a dialog on top, so arrow keys cannot change profile behind it. */
 	isProfileNavigationLocked?: boolean;
+	provenance?: ProfileCrossAccountProvenance | null;
+	showCrossAccountProvenance?: boolean;
+	enableFloatingMiniChat?: boolean;
+	accountMetaMap?: Record<string, FormattedAccountLabel>;
+	onOpenMiniChat?: (profileId: string, accountId?: string) => void;
 };
 
 /**
@@ -231,6 +239,11 @@ export function ProfileDetailsModal({
 	onPrevProfile,
 	onNextProfile,
 	isProfileNavigationLocked = false,
+	provenance,
+	showCrossAccountProvenance = false,
+	enableFloatingMiniChat = true,
+	accountMetaMap = {},
+	onOpenMiniChat,
 }: ProfileDetailsModalProps) {
 	const { t } = useTranslation();
 	const { unitsPreset, showAlbumSensitiveContentWarning } = usePreferences();
@@ -678,6 +691,92 @@ export function ProfileDetailsModal({
 			)}
 		</div>
 	) : null;
+
+	const provenanceSectionJsx =
+		showCrossAccountProvenance &&
+		!isOwnProfile &&
+		messageProfileId &&
+		provenance &&
+		(provenance.favoriteAccountIds.length > 0 || provenance.conversations.length > 0) ? (
+			<div className="mb-3 px-3">
+				<div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/65 p-2.5 space-y-2">
+					{provenance.favoriteAccountIds.length > 0 && (
+						<div className="flex flex-wrap items-center gap-1.5">
+							<span className="inline-flex items-center gap-1 text-[11px] font-semibold text-yellow-400">
+								<Star className="h-3 w-3 fill-current" />
+								Favorite of:
+							</span>
+							{provenance.favoriteAccountIds.map((accId) => {
+								const meta = accountMetaMap[accId];
+								const label = meta?.label || accId;
+								return (
+									<button
+										key={`modal-fav-${accId}`}
+										type="button"
+										onClick={() => {
+											if (enableFloatingMiniChat && onOpenMiniChat) {
+												onOpenMiniChat(String(messageProfileId), accId);
+											} else {
+												onMessageProfile?.(String(messageProfileId));
+											}
+										}}
+										className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] transition hover:border-[var(--accent)]"
+									>
+										<Avatar src={meta?.avatarUrl ?? null} alt="" className="h-4 w-4 shrink-0 rounded-full border-0" />
+										<span>{label}</span>
+									</button>
+								);
+							})}
+						</div>
+					)}
+					{provenance.conversations.length > 0 && (
+						<div className="flex flex-wrap items-center gap-1.5">
+							<span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--accent)]">
+								<MessageCircle className="h-3 w-3" />
+								Chats with:
+							</span>
+							{provenance.conversations.map((conv) => {
+								const meta = accountMetaMap[conv.accountId];
+								const label = meta?.label || conv.accountId;
+								return (
+									<button
+										key={`modal-conv-${conv.accountId}`}
+										type="button"
+										onClick={() => {
+											if (enableFloatingMiniChat && onOpenMiniChat) {
+												onOpenMiniChat(String(messageProfileId), conv.accountId);
+											} else {
+												onMessageProfile?.(String(messageProfileId));
+											}
+										}}
+										title={conv.lastMessagePreview || label}
+										className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--text)] transition hover:border-[var(--accent)]"
+									>
+										<Avatar src={meta?.avatarUrl ?? null} alt="" className="h-4 w-4 shrink-0 rounded-full border-0" />
+										<span>{label}</span>
+										{conv.unreadCount > 0 ? (
+											<span className="rounded-full bg-[var(--accent)] px-1.5 text-[10px] font-bold text-[var(--accent-contrast)]">
+												{conv.unreadCount}
+											</span>
+										) : conv.messageCount > 0 ? (
+											<span className="text-[10px] text-[var(--text-muted)]">({conv.messageCount})</span>
+										) : null}
+									</button>
+								);
+							})}
+						</div>
+					)}
+				</div>
+			</div>
+		) : null;
+
+	const topSectionJsx =
+		provenanceSectionJsx || notesSectionJsx ? (
+			<>
+				{provenanceSectionJsx}
+				{notesSectionJsx}
+			</>
+		) : undefined;
 
 	const barTapEmoji = (id: number) => id === 0 ? "👋" : id === 2 ? "😈" : "🔥";
     const barTapParticleColor = (id: number) => id === 0 ? "rgba(234,179,8,0.9)" : id === 2 ? "rgba(168,85,247,0.9)" : "rgba(249,115,22,0.9)";
@@ -1800,7 +1899,7 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 							bodyTypeLabels={bodyTypeLabels}
 							ethnicityLabels={ethnicityLabels}
 							relationshipStatusLabels={relationshipStatusLabels}
-							extraTopSection={notesSectionJsx}
+							extraTopSection={topSectionJsx}
 							isChatLinkedProfile={isChatLinkedProfile}
 							hidePicturesSection={true}
 						/>
@@ -2317,7 +2416,7 @@ const barTapGlow = (id: number) => id === 0 ? "drop-shadow(0 0 10px rgba(234,179
 											bodyTypeLabels={bodyTypeLabels}
 											ethnicityLabels={ethnicityLabels}
 											relationshipStatusLabels={relationshipStatusLabels}
-											extraTopSection={notesSectionJsx}
+											extraTopSection={topSectionJsx}
 											isChatLinkedProfile={isChatLinkedProfile}
 											hidePicturesSection={true}
 										/>

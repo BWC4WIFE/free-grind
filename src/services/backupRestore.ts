@@ -219,3 +219,59 @@ export function previewTableRows(options: {
 export function syncMasterDatabase(): Promise<ImportBackupResult> {
 	return invoke("sync_master_database");
 }
+
+export interface AccountLocationEntry {
+	profileId: string;
+	locationName?: string | null;
+	shortLocationName?: string | null;
+	geohash?: string | null;
+}
+
+export interface ProfileAccountConversation {
+	accountId: string;
+	conversationId: string;
+	lastActivityTimestamp?: number | null;
+	unreadCount: number;
+	messageCount: number;
+	lastMessagePreview?: string | null;
+}
+
+export interface ProfileCrossAccountProvenance {
+	favoriteAccountIds: string[];
+	conversations: ProfileAccountConversation[];
+}
+
+export interface MiniChatMessage {
+	messageId: string;
+	conversationId: string;
+	senderId: number;
+	timestamp: number;
+	msgType?: string | null;
+	text?: string | null;
+	unsent: boolean;
+}
+
+export function listAccountLocations(): Promise<AccountLocationEntry[]> {
+	return invoke("list_account_locations");
+}
+
+export function getCrossAccountProfileProvenance(
+	profileIds: string[],
+): Promise<Record<string, ProfileCrossAccountProvenance>> {
+	if (profileIds.length === 0) {
+		return Promise.resolve({});
+	}
+	return invoke("get_cross_account_profile_provenance", { profileIds });
+}
+
+export function readAccountConversationMessages(
+	accountId: string,
+	conversationId: string,
+	limit = 40,
+): Promise<MiniChatMessage[]> {
+	return invoke("read_account_conversation_messages", {
+		accountId,
+		conversationId,
+		limit,
+	});
+}

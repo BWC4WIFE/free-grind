@@ -1,4 +1,5 @@
 import type { BrowseCard } from "../../GridPage.types";
+import { useEffect, useRef, useState } from "react";
 import { MapPin, MapPinOff, MessageCircle, Plane, Satellite, Star, Zap } from "lucide-react";
 import { RightNowIcon } from "../../../../components/icons/RightNowIcon";
 import { useTranslation } from "react-i18next";
@@ -9,18 +10,26 @@ import {
 } from "../utils";
 import { cn } from "../../../../utils/cn";
 import { ProfileImage } from "../../../../components/ui/profile-image";
+import { Avatar } from "../../../../components/ui/avatar";
 import { FreeGrindBadge } from "../../../../components/FreeGrindBadge";
 import { usePresenceCheck } from "../../../../hooks/usePresenceCheck";
 import { usePreferences } from "../../../../contexts/PreferencesContext";
 import type { ChatContactIndexRecord } from "../../../../types/chat-contact-index";
+import type { ProfileCrossAccountProvenance } from "../../../../services/backupRestore";
+import type { FormattedAccountLabel } from "../../../../utils/accountLabels";
 import { useRevealOnScroll } from "../../../../hooks/useRevealOnScroll";
 
 type BrowseCardTileProps = {
 	card: BrowseCard;
 	chatContactStatus?: ChatContactIndexRecord | null;
 	localNickname?: string;
+	provenance?: ProfileCrossAccountProvenance | null;
+	showProvenance?: boolean;
+	enableMiniChat?: boolean;
+	accountMetaMap?: Record<string, FormattedAccountLabel>;
 	onSelectProfile: (profileId: string) => void;
 	onMessageProfile: (profileId: string) => void;
+	onOpenMiniChat?: (profileId: string, accountId?: string) => void;
 	isDesktop?: boolean;
 };
 
@@ -28,13 +37,27 @@ export function BrowseCardTile({
 	card,
 	chatContactStatus,
 	localNickname,
+	provenance,
+	showProvenance = false,
+	enableMiniChat = true,
+	accountMetaMap = {},
 	onSelectProfile,
-	onMessageProfile: _onMessageProfile,
+	onMessageProfile,
+	onOpenMiniChat,
 	isDesktop = false,
 }: BrowseCardTileProps) {
 	const { t } = useTranslation();
 	const { unitsPreset, showDebugInfo, blurGridProfilePictures } = usePreferences();
 	const { ref, revealClass } = useRevealOnScroll();
+	const [isHovered, setIsHovered] = useState(false);
+	const hoverTimerRef = useRef<number | null>(null);
+	useEffect(() => {
+		return () => {
+			if (hoverTimerRef.current !== null) {
+				window.clearTimeout(hoverTimerRef.current);
+			}
+		};
+	}, []);
 	const name = localNickname?.trim() || getDisplayName(card);
 	const onlineStatus = getOnlineStatusMeta(card.lastOnline, card.onlineUntil);
 	const age = typeof card.age === "number" && card.age > 0 ? card.age : null;
@@ -47,13 +70,56 @@ export function BrowseCardTile({
 	const isBoosting = card.isBoosting === true;
 	const databaseUnread = chatContactStatus?.unreadCount ?? 0;
 	const apiUnread = card.unreadCount ?? 0;
-	const unreadCount = Math.max(databaseUnread, apiUnread);
-	const hasChatted = Boolean(chatContactStatus?.hasChatted) || card.chatted === true || unreadCount > 0;
-	const isFavorite = card.favorite === true;
+	const crossUnread = provenance?.conversations.reduce((acc, c) => Math.max(acc, c.unreadCount), 0) ?? 0;
+	const unreadCount = Math.max(databaseUnread, apiUnread, showProvenance ? crossUnread : 0);
+	const hasCrossChat = showProvenance && (provenance?.conversations.length ?? 0) > 0;
+	const hasChatted = Boolean(chatContactStatus?.hasChatted) || card.chatted === true || unreadCount > 0 || hasCrossChat;
+	const hasCrossFav = showProvenance && (provenance?.favoriteAccountIds.length ?? 0) > 0;
+	const isFavorite = card.favorite === true || hasCrossFav;
+	const hasProvenanceData =
+		isDesktop &&
+		showProvenance &&
+		!isDemoCard &&
+		((provenance?.favoriteAccountIds.length ?? 0) > 0 || (provenance?.conversations.length ?? 0) > 0);
+	const primaryChatAccountId = provenance?.conversations[0]?.accountId ?? provenance?.favoriteAccountIds[0];
 
+	const handlePointerEnter = () => {
+		if (!hasProvenanceData) return;
+		if (hoverTimerRef.current !== null) {
+			window.clearTimeout(hoverTimerRef.current);
+			hoverTimerRef.current = null;
+		}
+		setIsHovered(true);
+	};
+
+	const handlePointerLeave = () => {
+		if (hoverTimerRef.current !== null) {
+			window.clearTimeout(hoverTimerRef.current);
+		}
+		hoverTimerRef.current = window.setTimeout(() => setIsHovered(false), 120);
+	};
+
+	const handleTriggerChat = (accountId?: string) => {
+		if (isDemoCard) return;
+		if (enableMiniChat && onOpenMiniChat) {
+			onOpenMiniChat(card.profileId, accountId ?? primaryChatAccountId);
+		} else {
+			onMessageProfile(card.profileId);
+		}
+	};
 
 	return (
-		<div ref={ref} className={cn(!isDesktop && "bg-black rounded-[4px] overflow-hidden", revealClass)}>
+		<div
+			ref={ref}
+			onMouseEnter={handlePointerEnter}
+			onMouseLeave={handlePointerLeave}
+			className={cn(
+				"relative",
+				!isDesktop && "bg-black rounded-[4px] overflow-hidden",
+				isHovered && "z-30",
+				revealClass,
+			)}
+		>
 			<button
 				type="button"
 				key={card.profileId}
@@ -164,8 +230,8 @@ export function BrowseCardTile({
 						</div>
 					</div>
 
-					{/* Bottom-right: Interaction cluster */}
-					<div className="absolute bottom-2 right-2 z-10 flex items-center gap-1">
+					{/* Bottom-right: Non-interactive indicators when not clickable; interactive chat pill moved outside outer <button> */}
+					<div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 pointer-events-none">
 						{isFavorite && (
 							<div className="flex h-5 w-5 items-center justify-center rounded-full bg-black/50 text-yellow-500 shadow-lg backdrop-blur-sm">
 								<Star className="h-3.5 w-3.5 fill-current" />
@@ -176,20 +242,8 @@ export function BrowseCardTile({
 							<FreeGrindBadge size="md" variant="onDark" title={t("profile_details.uses_free_grind")} />
 						)}
 
-						{unreadCount > 0 ? (
-							<span className="flex h-5 min-w-5 flex-col items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold text-[var(--accent-contrast)] shadow-lg ring-1 ring-black/20">
-								<span>{unreadCount}</span>
-								{showDebugInfo && !isDemoCard && (
-									<span className="text-[7px] leading-tight opacity-80">
-										db:{databaseUnread} a:{apiUnread}
-									</span>
-								)}
-							</span>
-						) : hasChatted ? (
-							<div className="flex h-5 w-5 items-center justify-center rounded-full bg-black/50 text-white shadow-lg backdrop-blur-sm">
-								<MessageCircle className="h-3.5 w-3.5" />
-							</div>
-						) : null}
+						{/* Reserve horizontal slot if clickable chat badge sits outside the button */}
+						{(unreadCount > 0 || hasChatted) && <span className="h-5 min-w-5 opacity-0" />}
 					</div>
 
 					{/* Bottom-left: Distance */}
@@ -207,6 +261,109 @@ export function BrowseCardTile({
 					</div>
 				</div>
 			</button>
+
+			{/* Sibling clickable chat/unread pill (outside outer <button> to avoid nested buttons) */}
+			{(unreadCount > 0 || hasChatted) && !isDemoCard && (
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						handleTriggerChat();
+					}}
+					title={enableMiniChat ? "Open mini-chat" : "Open chat"}
+					aria-label={enableMiniChat ? "Open mini-chat" : "Open chat"}
+					className="absolute bottom-2 right-2 z-20 flex items-center justify-center transition-transform hover:scale-110 active:scale-95"
+				>
+					{unreadCount > 0 ? (
+						<span className="flex h-5 min-w-5 flex-col items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold text-[var(--accent-contrast)] shadow-lg ring-1 ring-black/20">
+							<span>{unreadCount}</span>
+							{showDebugInfo && (
+								<span className="text-[7px] leading-tight opacity-80">
+									db:{databaseUnread} a:{apiUnread}
+								</span>
+							)}
+						</span>
+					) : (
+						<span className="flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur-sm ring-1 ring-white/20">
+							<MessageCircle className="h-3.5 w-3.5" />
+						</span>
+					)}
+				</button>
+			)}
+
+			{/* Desktop hover provenance popover showing which saved accounts favorited or converse with this profile */}
+			{hasProvenanceData && isHovered && provenance && (
+				<div
+					onClick={(e) => e.stopPropagation()}
+					className="absolute inset-x-1 bottom-9 z-40 rounded-xl border border-white/15 bg-black/92 p-2 text-white shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100"
+				>
+					{provenance.favoriteAccountIds.length > 0 && (
+						<div className="mb-1.5 last:mb-0">
+							<p className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-yellow-400">
+								<Star className="h-3 w-3 fill-current" />
+								Favorite of
+							</p>
+							<div className="flex flex-wrap gap-1">
+								{provenance.favoriteAccountIds.map((accId) => {
+									const meta = accountMetaMap[accId];
+									const label = meta?.label || accId;
+									return (
+										<button
+											key={`fav-${accId}`}
+											type="button"
+											onClick={() => handleTriggerChat(accId)}
+											className="inline-flex max-w-full items-center gap-1 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-white transition hover:bg-white/20"
+											title={`Open ${label}`}
+										>
+											<Avatar src={meta?.avatarUrl ?? null} alt="" className="h-3.5 w-3.5 shrink-0 rounded-full border-0" />
+											<span className="truncate">{label}</span>
+										</button>
+									);
+								})}
+							</div>
+						</div>
+					)}
+
+					{provenance.conversations.length > 0 && (
+						<div>
+							<p className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-sky-300">
+								<MessageCircle className="h-3 w-3" />
+								Chats with
+							</p>
+							<div className="flex flex-col gap-1">
+								{provenance.conversations.map((conv) => {
+									const meta = accountMetaMap[conv.accountId];
+									const label = meta?.label || conv.accountId;
+									return (
+										<button
+											key={`conv-${conv.accountId}`}
+											type="button"
+											onClick={() => handleTriggerChat(conv.accountId)}
+											className="flex w-full items-center gap-1.5 rounded-lg bg-white/10 px-1.5 py-1 text-left text-[10px] transition hover:bg-white/20"
+											title={conv.lastMessagePreview || label}
+										>
+											<Avatar src={meta?.avatarUrl ?? null} alt="" className="h-4 w-4 shrink-0 rounded-full border-0" />
+											<div className="min-w-0 flex-1">
+												<p className="truncate font-semibold leading-tight text-white">{label}</p>
+												{conv.lastMessagePreview && (
+													<p className="truncate text-[9px] text-white/70">{conv.lastMessagePreview}</p>
+												)}
+											</div>
+											{conv.unreadCount > 0 ? (
+												<span className="shrink-0 rounded-full bg-[var(--accent)] px-1.5 text-[9px] font-bold text-[var(--accent-contrast)]">
+													{conv.unreadCount}
+												</span>
+											) : conv.messageCount > 0 ? (
+												<span className="shrink-0 text-[9px] text-white/60">{conv.messageCount}</span>
+											) : null}
+										</button>
+									);
+								})}
+							</div>
+						</div>
+					)}
+				</div>
+			)}
 		</div>
 	);
 }

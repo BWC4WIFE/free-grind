@@ -13,6 +13,8 @@ import {
 import { Button } from "../../../../components/ui/button";
 import { getAsyncState } from "../../../../hooks/useAsyncViewState";
 import type { ChatContactIndexRecord } from "../../../../types/chat-contact-index";
+import type { ProfileCrossAccountProvenance } from "../../../../services/backupRestore";
+import type { FormattedAccountLabel } from "../../../../utils/accountLabels";
 
 function BrowseGridSkeleton({ isDesktop, mobileColumns }: { isDesktop: boolean; mobileColumns: "2" | "3" }) {
 	const count = isDesktop ? 30 : mobileColumns === "2" ? 16 : 24;
@@ -60,8 +62,13 @@ type BrowseGridProps = {
 	cards: BrowseCard[];
 	chatContactIndexByProfileId?: Record<string, ChatContactIndexRecord>;
 	localNicknamesByProfileId?: Record<string, string>;
+	provenanceByProfileId?: Record<string, ProfileCrossAccountProvenance>;
+	showCrossAccountProvenance?: boolean;
+	enableFloatingMiniChat?: boolean;
+	accountMetaMap?: Record<string, FormattedAccountLabel>;
 	onSelectProfile: (profileId: string) => void;
 	onMessageProfile: (profileId: string) => void;
+	onOpenMiniChat?: (profileId: string, accountId?: string) => void;
 	hasMore?: boolean;
 	isLoadingMore?: boolean;
 	onLoadMore?: () => void;
@@ -88,8 +95,13 @@ export function BrowseGrid({
 	cards,
 	chatContactIndexByProfileId,
 	localNicknamesByProfileId,
+	provenanceByProfileId,
+	showCrossAccountProvenance = false,
+	enableFloatingMiniChat = true,
+	accountMetaMap,
 	onSelectProfile,
 	onMessageProfile,
+	onOpenMiniChat,
 	hasMore,
 	isLoadingMore,
 	onLoadMore,
@@ -379,8 +391,13 @@ export function BrowseGrid({
 									card={card}
 									chatContactStatus={chatContactIndexByProfileId?.[card.profileId] ?? null}
 									localNickname={localNicknamesByProfileId?.[card.profileId]}
+									provenance={provenanceByProfileId?.[card.profileId] ?? null}
+									showProvenance={showCrossAccountProvenance}
+									enableMiniChat={enableFloatingMiniChat}
+									accountMetaMap={accountMetaMap}
 									onSelectProfile={onSelectProfile}
 									onMessageProfile={onMessageProfile}
+									onOpenMiniChat={onOpenMiniChat}
 									isDesktop={isDesktop}
 								/>
 							))}

@@ -20,6 +20,7 @@ import {
 	KeyRound,
 	Loader2,
 	LogOut,
+	MapPin,
 	Megaphone,
 	MessageSquareWarning,
 	History,
@@ -31,6 +32,7 @@ import {
 	Shield,
 	SlidersHorizontal,
 	Terminal,
+	Users,
     Workflow,
 	UserPlus,
 	UserX,
@@ -69,6 +71,10 @@ import { getThumbImageUrl } from "../../utils/media";
 import { getSavedAccountProfile, removeSavedAccountProfile } from "../../services/savedAccountProfiles";
 import { isAndroid } from "../../services/saveMedia";
 import { useSettingsSearchIndex } from "../../data/settingsSearchIndex";
+import { listAccountLocations, type AccountLocationEntry } from "../../services/backupRestore";
+import { useCrossAccountUiPrefs } from "../../utils/crossAccountUiPrefs";
+import { buildAccountLabelMap } from "../../utils/accountLabels";
+import { CrossAccountUiSettingsModal } from "../../components/CrossAccountUiSettingsModal";
 
 const PUSH_TOKEN_STORAGE_KEY = "fg-fcm-token";
 const PUSH_TOKEN_SYNCED_STORAGE_KEY = "fg-fcm-token-synced";
@@ -588,6 +594,37 @@ export function SettingsPage() {
 	const [contributorCodeInput, setContributorCodeInput] = useState("");
 	const [isActivatingContributor, setIsActivatingContributor] = useState(false);
 	const [isContributorDialogOpen, setIsContributorDialogOpen] = useState(false);
+	const { prefs: crossAccountUiPrefs } = useCrossAccountUiPrefs();
+	const [accountLocations, setAccountLocations] = useState<AccountLocationEntry[]>([]);
+	const [isCrossAccountModalOpen, setIsCrossAccountModalOpen] = useState(false);
+
+	useEffect(() => {
+		if (!crossAccountUiPrefs.showAccountLocationHints) {
+			return;
+		}
+		let cancelled = false;
+		void listAccountLocations()
+			.then((entries) => {
+				if (!cancelled) {
+					setAccountLocations(entries);
+				}
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, [userId, savedAccounts.length, crossAccountUiPrefs.showAccountLocationHints]);
+
+	const accountMetaMap = useMemo(() => {
+		const locsById: Record<string, AccountLocationEntry> = {};
+		for (const loc of accountLocations) {
+			locsById[loc.profileId] = loc;
+		}
+		const ids = new Set<string>();
+		if (userId != null) ids.add(String(userId));
+		for (const acc of savedAccounts) ids.add(acc.profileId);
+		return buildAccountLabelMap(ids, savedAccounts, locsById);
+	}, [userId, savedAccounts, accountLocations]);
 
 	const handleForceSyncFcm = useCallback(async (overrideToken?: string) => {
 		const tokenToSync = overrideToken ?? fcmToken;
@@ -986,11 +1023,17 @@ export function SettingsPage() {
 								? savedAccounts.find((account) => String(userId) === account.profileId)
 								: undefined;
 							const activeProfile = userId != null ? getSavedAccountProfile(String(userId)) : null;
+							const activeMeta = userId != null ? accountMetaMap[String(userId)] : undefined;
+							const activeLocationHint =
+								crossAccountUiPrefs.showAccountLocationHints && (activeMeta?.fullLocation || activeMeta?.shortLocation)
+									? `Location: ${activeMeta.fullLocation || activeMeta.shortLocation}`
+									: undefined;
 							return (
 								<div className="flex items-center gap-1">
 									<button
 										type="button"
 										onClick={() => navigate("/settings/profile-editor")}
+										title={activeLocationHint}
 										className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[var(--surface-2)] active:bg-[var(--surface-2)]"
 									>
 										<Avatar
@@ -999,9 +1042,17 @@ export function SettingsPage() {
 											className="h-10 w-10 shrink-0 rounded-2xl border-0"
 										/>
 										<div className="min-w-0 flex-1">
-											<p className="truncate text-sm font-semibold leading-snug">
-												{activeProfile?.displayName || activeAccount?.email || t("settings.profile_editor")}
-											</p>
+											<div className="flex items-center gap-1.5">
+												<p className="truncate text-sm font-semibold leading-snug">
+													{activeProfile?.displayName || activeAccount?.email || t("settings.profile_editor")}
+												</p>
+												{crossAccountUiPrefs.showAccountLocationHints && activeMeta?.shortLocation && (
+													<span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+														<MapPin className="h-2.5 w-2.5 text-[var(--accent)]" />
+														<span className="max-w-[6rem] truncate">{activeMeta.shortLocation}</span>
+													</span>
+												)}
+											</div>
 											<p className="text-xs text-[var(--text-muted)] leading-snug mt-0.5">
 												{t("settings.profile_editor_desc")}
 											</p>
@@ -1041,12 +1092,18 @@ export function SettingsPage() {
 								const isSwitching = switchingProfileId === account.profileId;
 								const isRemoving = removingProfileId === account.profileId;
 								const savedProfile = getSavedAccountProfile(account.profileId);
+								const meta = accountMetaMap[account.profileId];
+								const rowLocationHint =
+									crossAccountUiPrefs.showAccountLocationHints && (meta?.fullLocation || meta?.shortLocation)
+										? `Location: ${meta.fullLocation || meta.shortLocation}`
+										: undefined;
 								return (
 									<div key={account.profileId} className="flex items-center gap-1">
 										<button
 											type="button"
 											onClick={() => void handleSwitchAccount(account.profileId)}
 											disabled={isSwitching || isRemoving}
+											title={rowLocationHint}
 											className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[var(--surface-2)] active:bg-[var(--surface-2)] disabled:cursor-not-allowed"
 										>
 											<div className="relative h-10 w-10 shrink-0">
@@ -1062,9 +1119,17 @@ export function SettingsPage() {
 												)}
 											</div>
 											<div className="min-w-0 flex-1">
-												<p className="truncate text-sm font-semibold leading-snug">
-													{savedProfile.displayName || account.email || account.profileId}
-												</p>
+												<div className="flex items-center gap-1.5">
+													<p className="truncate text-sm font-semibold leading-snug">
+														{savedProfile.displayName || account.email || account.profileId}
+													</p>
+													{crossAccountUiPrefs.showAccountLocationHints && meta?.shortLocation && (
+														<span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+															<MapPin className="h-2.5 w-2.5 text-[var(--accent)]" />
+															<span className="max-w-[6rem] truncate">{meta.shortLocation}</span>
+														</span>
+													)}
+												</div>
 												<p className="text-xs text-[var(--text-muted)] leading-snug mt-0.5">
 													{t("settings.account_tap_to_switch", { defaultValue: "Tap to switch" })}
 												</p>
@@ -1260,6 +1325,13 @@ export function SettingsPage() {
 							"bg-slate-500/15 text-slate-400",
 							t("settings.behavior"),
 							t("settings.behavior_desc"),
+						)}
+						{navRow(
+							() => setIsCrossAccountModalOpen(true),
+							<Users className="h-5 w-5" />,
+							"bg-emerald-500/15 text-emerald-400",
+							"Cross-Account & Grid UI",
+							"Toggle account location hints, Grid hover provenance, and floating mini-chat",
 						)}
 						{navRow(
 							() => navigate("/settings/notifications"),
@@ -1651,6 +1723,11 @@ export function SettingsPage() {
 					void handleCopyLoginTokens(Array.from(selectedTokenIds), "modal-selected")
 				}
 				onClose={() => setIsTokenDialogOpen(false)}
+			/>
+
+			<CrossAccountUiSettingsModal
+				isOpen={isCrossAccountModalOpen}
+				onClose={() => setIsCrossAccountModalOpen(false)}
 			/>
 		</section>
 	);

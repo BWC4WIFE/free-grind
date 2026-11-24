@@ -444,6 +444,52 @@ pub struct TablePreviewResult {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountLocationEntry {
+    profile_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    short_location_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    geohash: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAccountConversation {
+    account_id: String,
+    conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_activity_timestamp: Option<i64>,
+    unread_count: i64,
+    message_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_message_preview: Option<String>,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileCrossAccountProvenance {
+    favorite_account_ids: Vec<String>,
+    conversations: Vec<ProfileAccountConversation>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MiniChatMessage {
+    message_id: String,
+    conversation_id: String,
+    sender_id: i64,
+    timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    msg_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    unsent: bool,
+}
+
 /// Falls back to this if an archive's manifest predates the `categories`
 /// field (shouldn't happen in practice - export always writes it now - but
 /// costs nothing to handle gracefully rather than hide every table).
@@ -1021,6 +1067,14 @@ fn ensure_optional_directory_tables(conn: &Connection) -> Result<(), AppError> {
             rows_imported INTEGER NOT NULL,
             pulled_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS account_profile_favorites (
+            account_id TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (account_id, profile_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_account_profile_favorites_profile
+            ON account_profile_favorites(profile_id);
         "#,
     )?;
     add_column_if_missing(conn, "conversations", "source_owner_id", "TEXT")?;
@@ -2624,6 +2678,10 @@ fn sync_master_database_in_dir(dir: &Path) -> Result<ImportOutcome, AppError> {
             |_| {},
         )?;
         total_rows += outcome.rows_imported.unwrap_or(0);
+
+        if owner_id > 0 {
+            let _ = backfill_account_favorites_if_empty(&master_path, &src_path, owner_id);
+        }
     }
 
     Ok(ImportOutcome {
@@ -2631,6 +2689,534 @@ fn sync_master_database_in_dir(dir: &Path) -> Result<ImportOutcome, AppError> {
         rows_imported: Some(total_rows),
         error: None,
     })
+}
+
+fn backfill_account_favorites_if_empty(
+    master_path: &Path,
+    src_path: &Path,
+    owner_id: i64,
+) -> Result<(), AppError> {
+    let owner_str = owner_id.to_string();
+    let master_conn = Connection::open(master_path)?;
+    master_conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    let already_tracked: bool = master_conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM account_profile_favorites WHERE account_id = ?1 LIMIT 1)",
+            [&owner_str],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if already_tracked {
+        return Ok(());
+    }
+
+    let src_conn = Connection::open_with_flags(src_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    src_conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    let mut favs: Vec<(String, i64)> = Vec::new();
+    if table_exists(&src_conn, "known_profiles").unwrap_or(false) {
+        let kp_sql = if table_columns(&src_conn, "known_profiles")
+            .unwrap_or_default()
+            .iter()
+            .any(|c| c == "source_profile_id")
+        {
+            "SELECT profile_id, COALESCE(updated_at, 0) FROM known_profiles WHERE is_favorite = 1 AND profile_id IS NOT NULL AND (source_profile_id IS NULL OR TRIM(source_profile_id) = '' OR source_profile_id = ?1)"
+        } else {
+            "SELECT profile_id, COALESCE(updated_at, 0) FROM known_profiles WHERE is_favorite = 1 AND profile_id IS NOT NULL"
+        };
+        if let Ok(mut stmt) = src_conn.prepare(kp_sql) {
+            let rows_res = if kp_sql.contains("?1") {
+                stmt.query([&owner_str])
+            } else {
+                stmt.query([])
+            };
+            if let Ok(mut rows) = rows_res {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(pid), Ok(ts)) = (r.get::<_, String>(0), r.get::<_, i64>(1)) {
+                        let clean = pid.trim();
+                        if !clean.is_empty() {
+                            favs.push((clean.to_owned(), ts));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if table_exists(&src_conn, "conversations").unwrap_or(false) {
+        let conv_sql = if table_columns(&src_conn, "conversations")
+            .unwrap_or_default()
+            .iter()
+            .any(|c| c == "source_owner_id")
+        {
+            "SELECT other_profile_id, COALESCE(updated_at, 0) FROM conversations WHERE favorite = 1 AND other_profile_id IS NOT NULL AND (source_owner_id IS NULL OR TRIM(source_owner_id) = '' OR source_owner_id = ?1)"
+        } else {
+            "SELECT other_profile_id, COALESCE(updated_at, 0) FROM conversations WHERE favorite = 1 AND other_profile_id IS NOT NULL"
+        };
+        if let Ok(mut stmt) = src_conn.prepare(conv_sql) {
+            let rows_res = if conv_sql.contains("?1") {
+                stmt.query([&owner_str])
+            } else {
+                stmt.query([])
+            };
+            if let Ok(mut rows) = rows_res {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(pid), Ok(ts)) = (r.get::<_, String>(0), r.get::<_, i64>(1)) {
+                        let clean = pid.trim();
+                        if !clean.is_empty() {
+                            favs.push((clean.to_owned(), ts));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if favs.is_empty() {
+        return Ok(());
+    }
+    let tx = master_conn.unchecked_transaction()?;
+    {
+        let mut insert_stmt = tx.prepare(
+            "INSERT OR IGNORE INTO account_profile_favorites (account_id, profile_id, updated_at) VALUES (?1, ?2, ?3)",
+        )?;
+        for (pid, ts) in favs {
+            insert_stmt.execute(rusqlite::params![&owner_str, pid, ts])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn shorten_location_label(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = if !trimmed.contains(',') {
+        trimmed
+    } else {
+        let parts: Vec<&str> = trimmed
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let first_looks_like_street = parts[0].chars().any(|c| c.is_ascii_digit()) || parts[0].chars().count() > 24;
+        if first_looks_like_street && parts.len() >= 2 {
+            parts[1]
+        } else {
+            parts[0]
+        }
+    };
+    let mut chars = candidate.chars();
+    let short: String = chars.by_ref().take(21).collect();
+    if chars.next().is_some() {
+        Some(format!("{}…", short.trim_end()))
+    } else {
+        Some(short)
+    }
+}
+
+fn extract_readable_message_text(json_str: Option<&str>, msg_type: Option<&str>) -> Option<String> {
+    if let Some(raw) = json_str.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Ok(val) = serde_json::from_str::<Value>(raw) {
+            for key in ["text", "message", "body", "caption"] {
+                if let Some(s) = val.get(key).and_then(Value::as_str) {
+                    let clean = s.trim();
+                    if !clean.is_empty() {
+                        return Some(clean.to_owned());
+                    }
+                }
+            }
+            if let Some(s) = val.get("body").and_then(|b| b.get("text")).and_then(Value::as_str) {
+                let clean = s.trim();
+                if !clean.is_empty() {
+                    return Some(clean.to_owned());
+                }
+            }
+        }
+    }
+    match msg_type.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "image" | "photo" => Some("[Photo]".to_owned()),
+        "video" => Some("[Video]".to_owned()),
+        "audio" | "voice" => Some("[Audio]".to_owned()),
+        "album" => Some("[Album]".to_owned()),
+        "location" => Some("[Location]".to_owned()),
+        "profilephotoreply" | "profile_photo_reply" => Some("[Photo reply]".to_owned()),
+        "tap" => Some("[Tap]".to_owned()),
+        other if !other.is_empty() => Some(format!("[{other}]")),
+        _ => None,
+    }
+}
+
+fn list_account_db_paths_in_dir(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut result = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return result;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(owner_id) = parse_owner_from_file_name(&path) else {
+            continue;
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("sqlite3") {
+            continue;
+        }
+        result.push((owner_id.to_string(), path));
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+fn list_account_locations_in_dir(dir: &Path) -> Result<Vec<AccountLocationEntry>, AppError> {
+    let mut entries = Vec::new();
+    for (profile_id, path) in list_account_db_paths_in_dir(dir) {
+        let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+            continue;
+        };
+        let _ = conn.execute_batch("PRAGMA busy_timeout = 3000;");
+        let mut geohash: Option<String> = None;
+        let mut location_name: Option<String> = None;
+        if table_exists(&conn, "settings").unwrap_or(false) {
+            if let Ok(raw) = conn.query_row(
+                "SELECT value FROM settings WHERE key = 'locationPreferences'",
+                [],
+                |r| r.get::<_, String>(0),
+            ) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                    geohash = parsed
+                        .get("geohash")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
+                    location_name = parsed
+                        .get("locationName")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
+                }
+            }
+        }
+
+        let mut short_location_name: Option<String> = None;
+        if let Some(ref gh) = geohash {
+            if table_exists(&conn, "saved_locations").unwrap_or(false) {
+                if let Ok(saved_name) = conn.query_row(
+                    "SELECT name FROM saved_locations WHERE geohash = ?1 AND TRIM(name) != '' ORDER BY created_at DESC LIMIT 1",
+                    [gh],
+                    |r| r.get::<_, String>(0),
+                ) {
+                    let clean = saved_name.trim();
+                    if !clean.is_empty() {
+                        short_location_name = Some(clean.to_owned());
+                    }
+                }
+            }
+        }
+        if short_location_name.is_none() {
+            short_location_name = shorten_location_label(location_name.as_deref());
+        }
+
+        entries.push(AccountLocationEntry {
+            profile_id,
+            location_name,
+            short_location_name,
+            geohash,
+        });
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn list_account_locations(app: AppHandle) -> Result<Vec<AccountLocationEntry>, AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Backup(format!("failed to resolve app data dir: {e}")))?;
+    list_account_locations_in_dir(&dir)
+}
+
+fn get_cross_account_profile_provenance_in_dir(
+    dir: &Path,
+    profile_ids: &[String],
+) -> Result<HashMap<String, ProfileCrossAccountProvenance>, AppError> {
+    let clean_ids: Vec<String> = profile_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut out: HashMap<String, ProfileCrossAccountProvenance> = HashMap::new();
+    if clean_ids.is_empty() {
+        return Ok(out);
+    }
+    let id_set: HashSet<&str> = clean_ids.iter().map(String::as_str).collect();
+    let placeholders = std::iter::repeat("?")
+        .take(clean_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut fav_sets: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut seeded_accounts: HashSet<String> = HashSet::new();
+
+    let master_path = dir.join("master.sqlite3");
+    if master_path.is_file() {
+        if let Ok(mconn) = Connection::open_with_flags(&master_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+            let _ = mconn.execute_batch("PRAGMA busy_timeout = 3000;");
+            if table_exists(&mconn, "account_profile_favorites").unwrap_or(false) {
+                if let Ok(mut stmt) = mconn.prepare("SELECT DISTINCT account_id FROM account_profile_favorites") {
+                    if let Ok(mut rows) = stmt.query([]) {
+                        while let Ok(Some(r)) = rows.next() {
+                            if let Ok(acc) = r.get::<_, String>(0) {
+                                seeded_accounts.insert(acc);
+                            }
+                        }
+                    }
+                }
+                let q = format!(
+                    "SELECT account_id, profile_id FROM account_profile_favorites WHERE profile_id IN ({placeholders})"
+                );
+                if let Ok(mut stmt) = mconn.prepare(&q) {
+                    let params = rusqlite::params_from_iter(clean_ids.iter());
+                    if let Ok(mut rows) = stmt.query(params) {
+                        while let Ok(Some(r)) = rows.next() {
+                            if let (Ok(acc), Ok(pid)) = (r.get::<_, String>(0), r.get::<_, String>(1)) {
+                                fav_sets.entry(pid).or_default().insert(acc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut conv_by_profile: HashMap<String, HashMap<String, ProfileAccountConversation>> = HashMap::new();
+
+    for (account_id, path) in list_account_db_paths_in_dir(dir) {
+        let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+            continue;
+        };
+        let _ = conn.execute_batch("PRAGMA busy_timeout = 3000;");
+
+        if !seeded_accounts.contains(&account_id) && table_exists(&conn, "known_profiles").unwrap_or(false) {
+            let kp_cols = table_columns(&conn, "known_profiles").unwrap_or_default();
+            let q = if kp_cols.iter().any(|c| c == "source_profile_id") {
+                format!(
+                    "SELECT profile_id FROM known_profiles WHERE is_favorite = 1 AND (source_profile_id IS NULL OR TRIM(source_profile_id) = '' OR source_profile_id = '{account_id}') AND profile_id IN ({placeholders})"
+                )
+            } else {
+                format!(
+                    "SELECT profile_id FROM known_profiles WHERE is_favorite = 1 AND profile_id IN ({placeholders})"
+                )
+            };
+            if let Ok(mut stmt) = conn.prepare(&q) {
+                let params = rusqlite::params_from_iter(clean_ids.iter());
+                if let Ok(mut rows) = stmt.query(params) {
+                    while let Ok(Some(r)) = rows.next() {
+                        if let Ok(pid) = r.get::<_, String>(0) {
+                            fav_sets.entry(pid).or_default().insert(account_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if table_exists(&conn, "conversations").unwrap_or(false) {
+            let has_messages = table_exists(&conn, "messages").unwrap_or(false);
+            let conv_cols = table_columns(&conn, "conversations").unwrap_or_default();
+            let owner_filter = if conv_cols.iter().any(|c| c == "source_owner_id") {
+                format!(
+                    " AND (source_owner_id IS NULL OR TRIM(source_owner_id) = '' OR source_owner_id = '{account_id}')"
+                )
+            } else {
+                String::new()
+            };
+            let q = format!(
+                "SELECT conversation_id, other_profile_id, last_activity_timestamp, COALESCE(unread_count, 0), preview_json, COALESCE(favorite, 0)
+                 FROM conversations
+                 WHERE other_profile_id IN ({placeholders}){owner_filter}"
+            );
+            if let Ok(mut stmt) = conn.prepare(&q) {
+                let params = rusqlite::params_from_iter(clean_ids.iter());
+                if let Ok(mut rows) = stmt.query(params) {
+                    while let Ok(Some(r)) = rows.next() {
+                        let Ok(conv_id) = r.get::<_, String>(0) else { continue };
+                        let Ok(other_id) = r.get::<_, String>(1) else { continue };
+                        if !id_set.contains(other_id.as_str()) {
+                            continue;
+                        }
+                        let last_ts: Option<i64> = r.get(2).ok().flatten();
+                        let unread_count: i64 = r.get(3).unwrap_or(0);
+                        let preview_json: Option<String> = r.get(4).ok().flatten();
+                        let conv_fav: i64 = r.get(5).unwrap_or(0);
+                        if conv_fav != 0 && !seeded_accounts.contains(&account_id) {
+                            fav_sets.entry(other_id.clone()).or_default().insert(account_id.clone());
+                        }
+                        let msg_count: i64 = if has_messages {
+                            conn.query_row(
+                                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                                [&conv_id],
+                                |mr| mr.get(0),
+                            )
+                            .unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        let preview = extract_readable_message_text(preview_json.as_deref(), None);
+                        conv_by_profile
+                            .entry(other_id)
+                            .or_default()
+                            .insert(
+                                account_id.clone(),
+                                ProfileAccountConversation {
+                                    account_id: account_id.clone(),
+                                    conversation_id: conv_id,
+                                    last_activity_timestamp: last_ts,
+                                    unread_count,
+                                    message_count: msg_count,
+                                    last_message_preview: preview,
+                                },
+                            );
+                    }
+                }
+            }
+        }
+    }
+
+    for pid in clean_ids {
+        let mut fav_accounts: Vec<String> = fav_sets
+            .remove(&pid)
+            .map(|s| s.into_iter().collect())
+            .unwrap_or_default();
+        fav_accounts.sort();
+        let mut conversations: Vec<ProfileAccountConversation> = conv_by_profile
+            .remove(&pid)
+            .map(|m| m.into_values().collect())
+            .unwrap_or_default();
+        conversations.sort_by(|a, b| {
+            b.last_activity_timestamp
+                .unwrap_or(0)
+                .cmp(&a.last_activity_timestamp.unwrap_or(0))
+                .then_with(|| a.account_id.cmp(&b.account_id))
+        });
+        if !fav_accounts.is_empty() || !conversations.is_empty() {
+            out.insert(
+                pid,
+                ProfileCrossAccountProvenance {
+                    favorite_account_ids: fav_accounts,
+                    conversations,
+                },
+            );
+        }
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn get_cross_account_profile_provenance(
+    app: AppHandle,
+    profile_ids: Vec<String>,
+) -> Result<HashMap<String, ProfileCrossAccountProvenance>, AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Backup(format!("failed to resolve app data dir: {e}")))?;
+    get_cross_account_profile_provenance_in_dir(&dir, &profile_ids)
+}
+
+fn read_account_conversation_messages_in_dir(
+    dir: &Path,
+    account_id: &str,
+    conversation_id: &str,
+    limit: u32,
+) -> Result<Vec<MiniChatMessage>, AppError> {
+    let clean_acc = account_id.trim();
+    if clean_acc.is_empty() || !clean_acc.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::Backup("invalid account_id".to_owned()));
+    }
+    let clean_conv = conversation_id.trim();
+    if clean_conv.is_empty() {
+        return Ok(Vec::new());
+    }
+    let clamped_limit = limit.clamp(1, 100) as i64;
+
+    let account_path = dir.join(format!("chat-{clean_acc}.sqlite3"));
+    let master_path = dir.join("master.sqlite3");
+    let target_path = if account_path.is_file() {
+        account_path
+    } else if master_path.is_file() {
+        master_path
+    } else {
+        return Ok(Vec::new());
+    };
+
+    let conn = Connection::open_with_flags(&target_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let _ = conn.execute_batch("PRAGMA busy_timeout = 3000;");
+    if !table_exists(&conn, "messages").unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT message_id, conversation_id, sender_id, timestamp, COALESCE(chat1_type, type), body_json, COALESCE(unsent, 0)
+         FROM messages
+         WHERE conversation_id = ?1
+         ORDER BY timestamp DESC
+         LIMIT ?2",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![clean_conv, clamped_limit])?;
+    let mut msgs = Vec::new();
+    while let Some(r) = rows.next()? {
+        let message_id: String = r.get(0)?;
+        let conv_id: String = r.get(1)?;
+        let sender_id: i64 = r.get(2)?;
+        let timestamp: i64 = r.get(3)?;
+        let msg_type: Option<String> = r.get(4).ok().flatten();
+        let body_json: Option<String> = r.get(5).ok().flatten();
+        let unsent: bool = r.get::<_, i64>(6).unwrap_or(0) != 0;
+        let text = if unsent {
+            None
+        } else {
+            extract_readable_message_text(body_json.as_deref(), msg_type.as_deref())
+        };
+        msgs.push(MiniChatMessage {
+            message_id,
+            conversation_id: conv_id,
+            sender_id,
+            timestamp,
+            msg_type,
+            text,
+            unsent,
+        });
+    }
+    msgs.reverse();
+    Ok(msgs)
+}
+
+#[tauri::command]
+pub fn read_account_conversation_messages(
+    app: AppHandle,
+    account_id: String,
+    conversation_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<MiniChatMessage>, AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Backup(format!("failed to resolve app data dir: {e}")))?;
+    read_account_conversation_messages_in_dir(
+        &dir,
+        &account_id,
+        &conversation_id,
+        limit.unwrap_or(40),
+    )
 }
 
 #[tauri::command]
@@ -3506,5 +4092,69 @@ mod tests {
         assert_eq!(conv_count, 2);
         assert_eq!(known_count, 2);
         assert_eq!(snap_count, 1);
+    }
+
+    #[test]
+    fn cross_account_locations_provenance_and_mini_chat_work() {
+        let dir = TestDir::new("cross-account-provenance");
+        let db1 = dir.path().join("chat-100.sqlite3");
+        let db2 = dir.path().join("chat-200.sqlite3");
+        let master_path = dir.path().join("master.sqlite3");
+
+        let c1 = Connection::open(&db1).unwrap();
+        init_backup_test_schema(&c1);
+        c1.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES ('locationPreferences', '{"geohash":"w4rw0","locationName":"123 Nana Rd, Bangkok, Thailand"}');
+            INSERT INTO saved_locations (id, name, geohash, lat, lon, created_at) VALUES ('l1', 'Nana Plaza', 'w4rw0', 13.74, 100.55, 1000);
+            INSERT INTO conversations (
+                conversation_id, other_profile_id, name, participants_json,
+                last_activity_timestamp, unread_count, pinned, muted, favorite,
+                preview_json, archived, archived_reason, archived_at, hidden,
+                last_seen_in_inbox_at, created_at, updated_at
+            ) VALUES ('100:555', '555', 'Alex', '["100","555"]', 2500, 2, 0, 0, 0, '{"text":"hey there"}', 0, NULL, NULL, 0, NULL, 1000, 2500);
+            INSERT INTO messages (
+                message_id, conversation_id, sender_id, timestamp, type, chat1_type,
+                body_json, unsent, local_history, created_at, updated_at
+            ) VALUES ('m1', '100:555', 555, 2500, 'Text', 'text', '{"text":"hey there"}', 0, 0, 2500, 2500);
+            "#,
+        ).unwrap();
+        drop(c1);
+
+        let c2 = Connection::open(&db2).unwrap();
+        init_backup_test_schema(&c2);
+        c2.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES ('locationPreferences', '{"geohash":"w4r9r","locationName":"Dongtan"}');
+            "#,
+        ).unwrap();
+        drop(c2);
+
+        let m = Connection::open(&master_path).unwrap();
+        ensure_master_schema(&m).unwrap();
+        m.execute_batch(
+            r#"
+            INSERT INTO account_profile_favorites (account_id, profile_id, updated_at) VALUES ('100', '555', 2500);
+            INSERT INTO account_profile_favorites (account_id, profile_id, updated_at) VALUES ('200', '555', 2600);
+            "#,
+        ).unwrap();
+        drop(m);
+
+        let locs = list_account_locations_in_dir(dir.path()).unwrap();
+        assert_eq!(locs.len(), 2);
+        assert_eq!(locs[0].short_location_name.as_deref(), Some("Nana Plaza"));
+        assert_eq!(locs[1].short_location_name.as_deref(), Some("Dongtan"));
+
+        let prov = get_cross_account_profile_provenance_in_dir(dir.path(), &["555".to_owned()]).unwrap();
+        let entry = prov.get("555").unwrap();
+        assert_eq!(entry.favorite_account_ids, vec!["100".to_owned(), "200".to_owned()]);
+        assert_eq!(entry.conversations.len(), 1);
+        assert_eq!(entry.conversations[0].account_id, "100");
+        assert_eq!(entry.conversations[0].unread_count, 2);
+        assert_eq!(entry.conversations[0].message_count, 1);
+
+        let msgs = read_account_conversation_messages_in_dir(dir.path(), "100", "100:555", 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].text.as_deref(), Some("hey there"));
     }
 }

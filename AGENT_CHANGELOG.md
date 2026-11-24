@@ -137,3 +137,26 @@
 [2026-11-23 23:43] - Task: Incorporate Dismiss button and app-wide Tauri unregisterListener error guards from upstream PR #238
 - Modified: `src/utils/crashOverlay.ts`
 - Modified: `vite.config.mjs`
+
+[2026-11-24 03:54] - Task: Merge cross-account favorites, known_profiles, profile_photo_history, and profile_snapshots across Downloads\FreeGrind and AppData DBs with compatibility schema rebuild
+- System: `[Database]` - Backed up `%APPDATA%\dev.estopia.free-grind\{chat-345583344,chat-777395649,chat-801862494,master}.sqlite3` to `.bak`, merged 11,356 known profiles (365 favorites), 11,138 photo-history entries, 62 profile snapshots, and conversation favorite flags across all 4 AppData DBs and all 6 `.sqlite3` files in `Downloads\FreeGrind`, and rebuilt `profile_snapshots`/`data_pull_log` with `DEFAULT`s + legacy compatibility columns.
+
+[2026-11-25 01:28] - Task: Bump to v0.5.7 and add toggleable account location hints, Grid cross-account provenance, and floating mini-chat
+- Modified: `package.json`
+- Modified: `src-tauri/Cargo.toml`
+- Modified: `src-tauri/Cargo.lock`
+- Modified: `src-tauri/tauri.conf.json`
+- Modified: `src-tauri/src/commands/backup.rs`
+- Modified: `src-tauri/src/lib.rs`
+- Modified: `src/services/backupRestore.ts`
+- Modified: `src/services/chatDb.ts`
+- Created: `src/utils/crossAccountUiPrefs.ts`
+- Created: `src/utils/accountLabels.ts`
+- Created: `src/components/CrossAccountUiSettingsModal.tsx`
+- Created: `src/pages/app/gridpage/components/FloatingMiniChat.tsx`
+- Modified: `src/pages/app/gridpage/components/BrowseCardTile.tsx`
+- Modified: `src/pages/app/gridpage/components/BrowseGrid.tsx`
+- Modified: `src/pages/app/gridpage/components/ProfileDetailsModal.tsx`
+- Modified: `src/pages/app/GridPage.tsx`
+- Modified: `src/pages/app/SettingsPage.tsx`
+- System: `[Database]` - Seeded `account_profile_favorites` in `master.sqlite3` from `.bak` per-account backups (`345583344`: 219, `777395649`: 204, `801862494`: 49).

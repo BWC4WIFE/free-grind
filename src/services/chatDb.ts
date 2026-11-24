@@ -595,6 +595,18 @@ async function initChatDbSchema(db: Database, label: string): Promise<void> {
 						pulled_at INTEGER NOT NULL
 					)
 				`);
+
+				await db.execute(`
+					CREATE TABLE IF NOT EXISTS account_profile_favorites (
+						account_id TEXT NOT NULL,
+						profile_id TEXT NOT NULL,
+						updated_at INTEGER NOT NULL DEFAULT 0,
+						PRIMARY KEY (account_id, profile_id)
+					)
+				`);
+				await db.execute(
+					"CREATE INDEX IF NOT EXISTS idx_account_profile_favorites_profile ON account_profile_favorites(profile_id)",
+				);
 			}, label);
 }
 
@@ -3279,6 +3291,20 @@ export async function upsertKnownProfiles(
 	mirrorToMasterDb("upsert-known-profiles", async (mdb) => {
 		for (const entry of mergedEntries) {
 			await writeKnownProfileTx(mdb, entry, now);
+			if (entry.isFavorite === true) {
+				const favAccountId = entry.sourceProfileId?.trim() || activeOwnerId;
+				if (favAccountId) {
+					await mdb.execute(
+						`
+						INSERT INTO account_profile_favorites (account_id, profile_id, updated_at)
+						VALUES ($1, $2, $3)
+						ON CONFLICT(account_id, profile_id) DO UPDATE SET
+							updated_at = MAX(account_profile_favorites.updated_at, excluded.updated_at)
+						`,
+						[favAccountId, entry.profileId, now],
+					);
+				}
+			}
 		}
 	});
 
@@ -3341,9 +3367,28 @@ export async function setKnownProfileFavorite(
 	await executeWithLockRetry(db, "set-known-profile-favorite", async () => {
 		await writeKnownProfileFavoriteTx(db, id, isFavorite, now);
 	});
-	mirrorToMasterDb("set-known-profile-favorite", (mdb) =>
-		writeKnownProfileFavoriteTx(mdb, id, isFavorite, now),
-	);
+	const activeOwnerId = getActiveDbOwnerId();
+	mirrorToMasterDb("set-known-profile-favorite", async (mdb) => {
+		await writeKnownProfileFavoriteTx(mdb, id, isFavorite, now);
+		if (activeOwnerId) {
+			if (isFavorite) {
+				await mdb.execute(
+					`
+					INSERT INTO account_profile_favorites (account_id, profile_id, updated_at)
+					VALUES ($1, $2, $3)
+					ON CONFLICT(account_id, profile_id) DO UPDATE SET
+						updated_at = MAX(account_profile_favorites.updated_at, excluded.updated_at)
+					`,
+					[activeOwnerId, id, now],
+				);
+			} else {
+				await mdb.execute(
+					"DELETE FROM account_profile_favorites WHERE account_id = $1 AND profile_id = $2",
+					[activeOwnerId, id],
+				);
+			}
+		}
+	});
 }
 
 export async function getProfilePhotoHistory(

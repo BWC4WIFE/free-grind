@@ -62,6 +62,16 @@ import type { BrowseFiltersDraft } from "./browse-filters-storage";
 import { SKIP_BLOCK_CONFIRM_KEY, isBlockConfirmSkipped } from "../../utils/blockConfirm";
 import * as chatDb from "../../services/chatDb";
 import { hideProfile as hideProfileLocally, unhideProfile as unhideProfileLocally, GRID_HIDE_STATE_EVENT, type GridHideStateChangeDetail } from "../../services/profileHide";
+import {
+	listAccountLocations,
+	getCrossAccountProfileProvenance,
+	type AccountLocationEntry,
+	type ProfileCrossAccountProvenance,
+} from "../../services/backupRestore";
+import { useCrossAccountUiPrefs } from "../../utils/crossAccountUiPrefs";
+import { buildAccountLabelMap } from "../../utils/accountLabels";
+import { CrossAccountUiSettingsModal } from "../../components/CrossAccountUiSettingsModal";
+import { FloatingMiniChat } from "./gridpage/components/FloatingMiniChat";
 
 const EXPLORE_LOCATION_STORAGE_KEY = "grid_explore_location_v1";
 // The local displayname filter ("Lokale Filter" > nicknameFilter) matches
@@ -224,6 +234,16 @@ export function GridPage() {
 	const [localNicknamesByProfileId, setLocalNicknamesByProfileId] = useState<
 		Record<string, string>
 	>({});
+	const { prefs: uiPrefs } = useCrossAccountUiPrefs();
+	const [accountLocations, setAccountLocations] = useState<AccountLocationEntry[]>([]);
+	const [provenanceByProfileId, setProvenanceByProfileId] = useState<
+		Record<string, ProfileCrossAccountProvenance>
+	>({});
+	const [isCrossAccountUiModalOpen, setIsCrossAccountUiModalOpen] = useState(false);
+	const [miniChatTarget, setMiniChatTarget] = useState<{
+		profileId: string;
+		accountId?: string;
+	} | null>(null);
 
 	const blockedProfileIds = useMemo(() => new Set(blockedProfileIdsData ?? []), [blockedProfileIdsData]);
 
@@ -862,6 +882,81 @@ export function GridPage() {
 	}, [cards]);
 
 	useEffect(() => {
+		if (!uiPrefs.showAccountLocationHints && !uiPrefs.showGridCrossAccountProvenance && !uiPrefs.enableFloatingMiniChat) {
+			return;
+		}
+		let cancelled = false;
+		void listAccountLocations()
+			.then((entries) => {
+				if (!cancelled && isMountedRef.current) {
+					setAccountLocations(entries);
+				}
+			})
+			.catch((error) => {
+				appLog.warn("[account-locations] failed to load saved account locations", error);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		userId,
+		savedAccounts.length,
+		isAccountSwitcherOpen,
+		geohash,
+		locationName,
+		uiPrefs.showAccountLocationHints,
+		uiPrefs.showGridCrossAccountProvenance,
+		uiPrefs.enableFloatingMiniChat,
+	]);
+
+	useEffect(() => {
+		if (!uiPrefs.showGridCrossAccountProvenance && !uiPrefs.enableFloatingMiniChat) {
+			setProvenanceByProfileId({});
+			return;
+		}
+		const profileIds = cards
+			.map((card) => card.profileId)
+			.filter((id) => !id.startsWith("demo-"));
+		if (profileIds.length === 0) {
+			setProvenanceByProfileId({});
+			return;
+		}
+		let cancelled = false;
+		void getCrossAccountProfileProvenance(profileIds)
+			.then((result) => {
+				if (!cancelled && isMountedRef.current) {
+					setProvenanceByProfileId(result);
+				}
+			})
+			.catch((error) => {
+				appLog.warn("[provenance] failed to load cross-account provenance", error);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [cards, userId, uiPrefs.showGridCrossAccountProvenance, uiPrefs.enableFloatingMiniChat]);
+
+	const locationsById = useMemo(() => {
+		const map: Record<string, AccountLocationEntry> = {};
+		for (const entry of accountLocations) {
+			map[entry.profileId] = entry;
+		}
+		return map;
+	}, [accountLocations]);
+
+	const accountMetaMap = useMemo(() => {
+		const ids = new Set<string>();
+		if (userId != null) ids.add(String(userId));
+		for (const acc of savedAccounts) ids.add(acc.profileId);
+		for (const loc of accountLocations) ids.add(loc.profileId);
+		for (const prov of Object.values(provenanceByProfileId)) {
+			for (const favId of prov.favoriteAccountIds) ids.add(favId);
+			for (const conv of prov.conversations) ids.add(conv.accountId);
+		}
+		return buildAccountLabelMap(ids, savedAccounts, locationsById);
+	}, [userId, savedAccounts, accountLocations, provenanceByProfileId, locationsById]);
+
+	useEffect(() => {
 		if (!isLoadingCards || cardsError || isLoadingPreferences) {
 			return;
 		}
@@ -1232,13 +1327,27 @@ export function GridPage() {
 		setActiveProfileId(profileId);
 	};
 
-	const handleMessageProfile = (profileId: string) => {
-		const nextParams = new URLSearchParams();
-		nextParams.set("targetProfileId", profileId);
-		nextParams.set("returnTo", `${location.pathname}${location.search}`);
-        appLog.info("Profile", profileId);
-		navigate(`/chat?${nextParams.toString()}`);
-	};
+	const handleMessageProfile = useCallback(
+		(profileId: string) => {
+			const nextParams = new URLSearchParams();
+			nextParams.set("targetProfileId", profileId);
+			nextParams.set("returnTo", `${location.pathname}${location.search}`);
+			appLog.info("Profile", profileId);
+			navigate(`/chat?${nextParams.toString()}`);
+		},
+		[location.pathname, location.search, navigate],
+	);
+
+	const handleOpenMiniChat = useCallback(
+		(profileId: string, accountId?: string) => {
+			if (!uiPrefs.enableFloatingMiniChat) {
+				handleMessageProfile(profileId);
+				return;
+			}
+			setMiniChatTarget({ profileId, accountId });
+		},
+		[uiPrefs.enableFloatingMiniChat, handleMessageProfile],
+	);
 
 	const handleTagClick = (tag: string) => {
 		setTags([tag]);
@@ -1393,6 +1502,7 @@ export function GridPage() {
 						}
 						return {
 							...card,
+							favorite: !currentlyFavorite,
 							isFavorite: !currentlyFavorite,
 						};
 					}),
@@ -1533,12 +1643,18 @@ export function GridPage() {
 													const isSwitching = switchingProfileId === account.profileId;
 													const isCopyingRow = copyingTokenKey === `row:${account.profileId}`;
 													const savedProfile = getSavedAccountProfile(account.profileId);
+													const meta = accountMetaMap[account.profileId];
+													const locationTooltip =
+														uiPrefs.showAccountLocationHints && (meta?.fullLocation || meta?.shortLocation)
+															? `Location: ${meta.fullLocation || meta.shortLocation}`
+															: undefined;
 													return (
-														<div key={account.profileId} className="flex min-w-0 items-center gap-1">
+														<div key={account.profileId} className="group/acc relative flex min-w-0 items-center gap-1">
 															<button
 																type="button"
 																onClick={() => void handleSwitchAccount(account.profileId)}
 																disabled={isActive || isSwitching}
+																title={locationTooltip}
 																className="flex min-w-0 flex-1 items-center gap-2.5 rounded-sm px-1.5 py-1.5 text-left transition-colors hover:bg-[var(--surface-2)] active:bg-[var(--surface-2)] disabled:cursor-default"
 															>
 																<div className="relative h-10 w-10 shrink-0">
@@ -1559,9 +1675,17 @@ export function GridPage() {
 																	)}
 																</div>
 																<div className="min-w-0 flex-1">
-																	<p className="truncate text-sm font-semibold leading-snug text-[var(--text)]">
-																		{savedProfile.displayName || account.email || account.profileId}
-																	</p>
+																	<div className="flex items-center gap-1.5">
+																		<p className="truncate text-sm font-semibold leading-snug text-[var(--text)]">
+																			{savedProfile.displayName || account.email || account.profileId}
+																		</p>
+																		{uiPrefs.showAccountLocationHints && meta?.shortLocation && (
+																			<span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+																				<MapPin className="h-2.5 w-2.5 text-[var(--accent)]" />
+																				<span className="max-w-[5.5rem] truncate">{meta.shortLocation}</span>
+																			</span>
+																		)}
+																	</div>
 																	{account.email && (
 																		<p className="truncate text-xs text-[var(--text-muted)] leading-snug mt-0.5">
 																			{account.email}
@@ -1569,6 +1693,11 @@ export function GridPage() {
 																	)}
 																</div>
 															</button>
+															{locationTooltip && (
+																<div className="pointer-events-none absolute left-12 -top-2 z-50 hidden -translate-y-full whitespace-nowrap rounded-md border border-[var(--border)] bg-black/90 px-2 py-1 text-[10px] font-medium text-white shadow-lg group-hover/acc:block">
+																	{locationTooltip}
+																</div>
+															)}
 															<button
 																type="button"
 																onClick={(e) => {
@@ -1629,6 +1758,17 @@ export function GridPage() {
 														})}
 													</button>
 												)}
+												<button
+													type="button"
+													onClick={() => {
+														setIsAccountSwitcherOpen(false);
+														setIsCrossAccountUiModalOpen(true);
+													}}
+													className="flex w-full items-center justify-center gap-1.5 rounded-sm py-1.5 text-xs font-semibold text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text)]"
+												>
+													<SlidersHorizontal className="h-3.5 w-3.5" />
+													Cross-Account & Grid UI
+												</button>
 												<button
 													type="button"
 													onClick={() => { setIsAccountSwitcherOpen(false); navigate("/settings"); }}
@@ -1943,8 +2083,13 @@ export function GridPage() {
 									: chatContactIndexByProfileId
 							}
 							localNicknamesByProfileId={localNicknamesByProfileId}
+							provenanceByProfileId={provenanceByProfileId}
+							showCrossAccountProvenance={uiPrefs.showGridCrossAccountProvenance}
+							enableFloatingMiniChat={uiPrefs.enableFloatingMiniChat}
+							accountMetaMap={accountMetaMap}
 							onSelectProfile={handleSelectProfile}
 							onMessageProfile={handleMessageProfile}
+							onOpenMiniChat={handleOpenMiniChat}
 							hasMore={hasMoreCards}
 							isLoadingMore={isLoadingMoreCards}
 							onLoadMore={() => {
@@ -1997,6 +2142,11 @@ export function GridPage() {
 				localNickname={selectedProfileLocalNickname}
 				genderOptions={genderOptions}
 				pronounOptions={pronounOptions}
+				provenance={activeProfileId ? provenanceByProfileId[activeProfileId] ?? null : null}
+				showCrossAccountProvenance={uiPrefs.showGridCrossAccountProvenance}
+				enableFloatingMiniChat={uiPrefs.enableFloatingMiniChat}
+				accountMetaMap={accountMetaMap}
+				onOpenMiniChat={handleOpenMiniChat}
 			/>
 
 			<ConfirmDialog
@@ -2100,6 +2250,49 @@ export function GridPage() {
 					</div>
 				</form>
 			</dialog>
+
+			{miniChatTarget && uiPrefs.enableFloatingMiniChat && (() => {
+				const targetCard = cards.find((c) => c.profileId === miniChatTarget.profileId) ?? null;
+				const targetName =
+					localNicknamesByProfileId[miniChatTarget.profileId] ||
+					targetCard?.displayName?.trim() ||
+					(activeProfile?.profileId === miniChatTarget.profileId
+						? activeProfile.displayName?.trim()
+						: null) ||
+					`Profile ${miniChatTarget.profileId}`;
+				const targetPhoto =
+					targetCard?.primaryImageUrl ||
+					(activeProfile?.profileId === miniChatTarget.profileId && activeProfile.profileImageMediaHash
+						? getThumbImageUrl(activeProfile.profileImageMediaHash, "75x75")
+						: null);
+				return (
+					<FloatingMiniChat
+						isOpen={true}
+						targetProfileId={miniChatTarget.profileId}
+						targetDisplayName={targetName}
+						targetPhotoUrl={targetPhoto}
+						initialAccountId={miniChatTarget.accountId}
+						activeUserId={userId}
+						provenance={provenanceByProfileId[miniChatTarget.profileId] ?? null}
+						accountMetaMap={accountMetaMap}
+						onClose={() => setMiniChatTarget(null)}
+						onOpenProfile={(pid) => handleSelectProfile(pid)}
+						onOpenFullChat={(pid) => {
+							setMiniChatTarget(null);
+							handleMessageProfile(pid);
+						}}
+						onSwitchAccount={async (accountId) => {
+							await switchAccount(accountId);
+						}}
+						onSendQuickMessage={handleSendQuickMessage}
+					/>
+				);
+			})()}
+
+			<CrossAccountUiSettingsModal
+				isOpen={isCrossAccountUiModalOpen}
+				onClose={() => setIsCrossAccountUiModalOpen(false)}
+			/>
 		</>
 	);
 }
