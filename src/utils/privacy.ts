@@ -7,12 +7,18 @@ import { getSetting, setSetting } from "../services/chatDb";
 // ChatRealtimeBridge.tsx) don't need to await a db round-trip — mirrors the
 // pattern in utils/autoblock.ts.
 
+export interface SavedServerPrivacyPrefs {
+    locationSearchOptOut?: boolean;
+    showOnMap?: boolean;
+}
+
 interface PrivacySettings {
     hideReadReceiptsGlobal: boolean;
     showReadReceiptToggle: boolean;
     recordProfileViews: boolean;
     readReceiptsExceptions: Record<string, boolean>;
     incognitoMode: boolean;
+    savedServerPrefsBeforeIncognito?: SavedServerPrivacyPrefs | null;
 }
 
 const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
@@ -21,6 +27,7 @@ const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
     recordProfileViews: true,
     readReceiptsExceptions: {},
     incognitoMode: false,
+    savedServerPrefsBeforeIncognito: null,
 };
 
 const PRIVACY_SETTINGS_KEY = "privacy";
@@ -108,18 +115,48 @@ export async function setRecordProfileViewsEnabled(value: boolean): Promise<void
 }
 
 // --- INCOGNITO MODE ---
-// While on, the Grid never fetches nearby profiles (foreground or the
-// background keep-online refresh in GridAutoRefreshBridge), so the account
-// stops pinging the server for browse data and no longer shows as online to
-// others. Read fresh on every GridPage mount, so no change-event plumbing is
-// needed here — the toggle only lives on the Privacy settings page, a
-// different route, so GridPage is always freshly (re)mounted after it changes.
+// While on, the client parks the account's server location at an unpopulated
+// ocean geohash, hides distance/map visibility via /v3/me/prefs/settings, and
+// routes Grid browsing through exploreGeoHash so the user can still browse
+// profiles without appearing on the local grid or leaking views/receipts/typing.
+
+const INCOGNITO_CHANGED_EVENT = "fg-incognito-changed";
+
+function notifyIncognitoChanged() {
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event(INCOGNITO_CHANGED_EVENT));
+    }
+}
+
+export function useIncognitoMode(): boolean {
+    const [enabled, setEnabled] = useState(() => privacyCache.incognitoMode);
+
+    useEffect(() => {
+        const handler = () => setEnabled(privacyCache.incognitoMode);
+        window.addEventListener(INCOGNITO_CHANGED_EVENT, handler);
+        return () => window.removeEventListener(INCOGNITO_CHANGED_EVENT, handler);
+    }, []);
+
+    return enabled;
+}
 
 export function getIncognitoMode(): boolean {
     return privacyCache.incognitoMode;
 }
 
+export function getSavedServerPrefsBeforeIncognito(): SavedServerPrivacyPrefs | null {
+    return privacyCache.savedServerPrefsBeforeIncognito ?? null;
+}
+
+export async function setSavedServerPrefsBeforeIncognito(
+    prefs: SavedServerPrivacyPrefs | null,
+): Promise<void> {
+    privacyCache = { ...privacyCache, savedServerPrefsBeforeIncognito: prefs };
+    await setSetting(PRIVACY_SETTINGS_KEY, privacyCache);
+}
+
 export async function setIncognitoMode(value: boolean): Promise<void> {
     privacyCache = { ...privacyCache, incognitoMode: value };
     await setSetting(PRIVACY_SETTINGS_KEY, privacyCache);
+    notifyIncognitoChanged();
 }

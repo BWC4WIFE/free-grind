@@ -800,8 +800,8 @@
   "privacy": {
     "grid_visibility": "Grid Visibility",
     "incognito_mode": "Incognito Mode",
-    "incognito_mode_desc": "Stop the Grid from loading or refreshing, hide your read receipts, and stop reporting profile views — so you can browse without showing up as online or leaving a trace.",
-    "incognito_mode_note": "While this is on: the Grid (including its background refresh) won't load, read receipts are never sent, and visiting someone's profile won't register as a view. Turning incognito mode off restores all of these immediately.",
+    "incognito_mode_desc": "Hide yourself from the local grid, hide your distance and map pin, suppress read receipts and typing status, and stop reporting profile views — while still browsing profiles.",
+    "incognito_mode_note": "While this is on: your server location is parked off-grid and browsing uses explore mode so nearby users don't see you on the grid, read receipts and typing indicators are never sent, and visiting profiles won't register a view. Turning incognito mode off restores your location and privacy settings immediately.",
     "app_disguise": "App Disguise",
     "app_disguise_desc": "Swap the app's home screen icon and name for a decoy, so it doesn't announce itself when someone else looks at your phone.",
     "app_disguise_off": "Off",

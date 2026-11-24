@@ -1,6 +1,6 @@
 import { useAuth } from "../../contexts/useAuth";
 import { useApi } from "../../hooks/useApi";
-import { MapPin, Navigation, SlidersHorizontal, ListFilter, Star, Plane, Search, Eye, EyeOff, Check, Copy, KeyRound, Loader2, RefreshCw, Settings, Sparkles, X } from "lucide-react";
+import { MapPin, Navigation, SlidersHorizontal, ListFilter, Star, Plane, Search, Eye, EyeOff, Check, Copy, Ghost, KeyRound, Loader2, RefreshCw, Settings, Sparkles, X } from "lucide-react";
 import { RightNowIcon } from "../../components/icons/RightNowIcon";
 import { useLocation, useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
@@ -51,7 +51,7 @@ import {
 } from "../../services/chatContactIndex";
 import type { ChatContactIndexRecord } from "../../types/chat-contact-index";
 import { appLog } from "../../utils/logger";
-import { getIncognitoMode } from "../../utils/privacy";
+import { setIncognitoMode, useIncognitoMode } from "../../utils/privacy";
 import { setGridPageActive } from "./gridpage/activeState";
 import { GRID_REFRESH_INTERVAL_MS } from "../../components/gridRefreshInterval";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
@@ -695,17 +695,6 @@ export function GridPage() {
 				return;
 			}
 
-			if (getIncognitoMode()) {
-				if (!isMountedRef.current) {
-					return;
-				}
-				setCards([]);
-				setCardsError(null);
-				setIsLocationMissing(false);
-				setIsLoadingCards(false);
-				return;
-			}
-
 			const activeGeohash = overrideGeohash || geohash;
 
 			if (!activeGeohash) {
@@ -1016,9 +1005,6 @@ export function GridPage() {
 	}, [isLoadingCards, cardsError, isLoadingPreferences, BROWSE_LOAD_TIMEOUT_MS]);
 
 	const handleAutoRefresh = useCallback(async () => {
-		if (getIncognitoMode()) {
-			return;
-		}
 		appLog.info("[grid] auto-refresh triggered");
 		let activeGeohash = geohash;
 		if (browseCacheKey) {
@@ -1040,7 +1026,7 @@ export function GridPage() {
 	const performDeepSweep = useCallback(
 		async (overrideGeohash?: string) => {
 			const activeGeohash = overrideGeohash || geohash;
-			if (!activeGeohash || getIncognitoMode() || isDeepSweeping) return;
+			if (!activeGeohash || isDeepSweeping) return;
 			setIsDeepSweeping(true);
 			try {
 				const base = cardsRef.current;
@@ -1649,7 +1635,28 @@ export function GridPage() {
 		isUnblockingProfile,
 	]);
 
-	const isIncognitoActive = getIncognitoMode();
+	const isIncognitoActive = useIncognitoMode();
+	const [isTogglingIncognito, setIsTogglingIncognito] = useState(false);
+
+	const handleToggleIncognito = useCallback(async () => {
+		if (isTogglingIncognito) return;
+		const next = !isIncognitoActive;
+		setIsTogglingIncognito(true);
+		try {
+			await setIncognitoMode(next);
+			await apiFunctions.syncIncognitoServerState(next, geohash);
+			toast.success(
+				next
+					? t("privacy.incognito_enabled_toast", { defaultValue: "Incognito Mode enabled — you are hidden from the grid." })
+					: t("privacy.incognito_disabled_toast", { defaultValue: "Incognito Mode disabled — location restored." }),
+			);
+			void loadBrowseCards({ preferCache: false, showLoadingState: false });
+		} catch {
+			toast.error(t("privacy.incognito_sync_failed", { defaultValue: "Failed to sync Incognito Mode with server." }));
+		} finally {
+			setIsTogglingIncognito(false);
+		}
+	}, [apiFunctions, geohash, isIncognitoActive, isTogglingIncognito, loadBrowseCards, t]);
 
 	return (
 		<>
@@ -1671,9 +1678,6 @@ export function GridPage() {
 				style={{ overflow: "visible", overflowX: "hidden" }}
 				isAtTop={() => (feedContainerRef.current?.scrollTop ?? 0) <= 5}
 				onRefresh={async () => {
-					if (isIncognitoActive) {
-						return;
-					}
 					let activeGeohash = geohash;
 					if (browseCacheKey) {
 						sessionStorage.removeItem(`grid-scroll-${browseCacheKey}`);
@@ -1693,7 +1697,7 @@ export function GridPage() {
 						await performDeepSweep(activeGeohash || undefined);
 					}
 				}}
-				isDisabled={isLoadingCards || isLoadingMoreCards || isIncognitoActive}
+				isDisabled={isLoadingCards || isLoadingMoreCards}
 				refreshingLabel={t("browse_page.refreshing_feed")}
 			>
 				<header ref={headerRef} className="relative z-20 flex shrink-0 flex-col pb-2 pointer-events-none">
@@ -2130,6 +2134,18 @@ export function GridPage() {
 												setDeepSweepAddedCount(null);
 											}
 										}}
+										color={exploreLocation ? "explore" : "accent"}
+									/>
+
+									<FilterPill
+										icon={
+											<Ghost
+												className={cn("h-3.5 w-3.5", isTogglingIncognito && "animate-pulse")}
+											/>
+										}
+										label={t("privacy.incognito_mode", { defaultValue: "Incognito" })}
+										active={isIncognitoActive}
+										onClick={() => void handleToggleIncognito()}
 										color={exploreLocation ? "explore" : "accent"}
 									/>
 								</div>

@@ -433,6 +433,9 @@ export function createChatService(fetchRest: RestFetcher, t: (key: string) => st
 		},
 
 		async sendTypingStatus(conversationId: string, status: "Typing" | "Cleared"): Promise<void> {
+			if (getIncognitoMode()) {
+				return;
+			}
 			await fetchRest("/v4/chatstatus/typing", {
 				method: "POST",
 				body: { conversationId, status },

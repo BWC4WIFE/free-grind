@@ -16,7 +16,9 @@ import {
 import { BackToSettings } from "../../components/BackToSettings";
 import { ToggleRow } from "../../components/ui/toggle-row";
 import { usePreferences } from "../../contexts/PreferencesContext";
+import { useApiFunctions } from "../../hooks/useApiFunctions";
 import { useSettingsHighlight } from "../../hooks/useSettingsHighlight";
+import toast from "react-hot-toast";
 import {
 	type AppDisguiseId,
 	getCurrentAppDisguise,
@@ -49,13 +51,15 @@ const DISGUISE_OPTIONS: { id: AppDisguiseId; icon: typeof Ghost; labelKey: strin
 export function SettingsPrivacyPage() {
 	const { t } = useTranslation();
 	const highlightId = useSettingsHighlight();
-	const { blurIncomingMedia, blurGridProfilePictures, showAlbumSensitiveContentWarning, setPreferences } = usePreferences();
+	const { blurIncomingMedia, blurGridProfilePictures, showAlbumSensitiveContentWarning, geohash, setPreferences } = usePreferences();
+	const apiFunctions = useApiFunctions();
 
 	const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(() => !getHideReadReceiptsGlobal());
 	const [showReadReceiptToggle, setShowReadReceiptToggle] = useState(() => getShowReadReceiptToggle());
 	const [recordProfileViews, setRecordProfileViews] = useState(() => isRecordProfileViewsEnabled());
 	const [analyticsConsent, setAnalyticsConsent] = useState<AnalyticsConsentChoice | null>(() => readAnalyticsConsentChoice());
 	const [incognitoMode, setIncognitoModeState] = useState(() => getIncognitoMode());
+	const [isSyncingIncognito, setIsSyncingIncognito] = useState(false);
 	const [disguiseSupported] = useState(() => isAppDisguiseSupported());
 	const [disguise, setDisguiseState] = useState<AppDisguiseId>(() => getCurrentAppDisguise());
 
@@ -90,8 +94,24 @@ export function SettingsPrivacyPage() {
 							description={t("privacy.incognito_mode_desc")}
 							checked={incognitoMode}
 							onChange={(checked) => {
+								if (isSyncingIncognito) return;
 								setIncognitoModeState(checked);
-								void setIncognitoMode(checked);
+								setIsSyncingIncognito(true);
+								void (async () => {
+									try {
+										await setIncognitoMode(checked);
+										await apiFunctions.syncIncognitoServerState(checked, geohash);
+										toast.success(
+											checked
+												? t("privacy.incognito_enabled_toast", { defaultValue: "Incognito Mode enabled — you are hidden from the grid." })
+												: t("privacy.incognito_disabled_toast", { defaultValue: "Incognito Mode disabled — location restored." }),
+										);
+									} catch {
+										toast.error(t("privacy.incognito_sync_failed", { defaultValue: "Failed to sync Incognito Mode with server." }));
+									} finally {
+										setIsSyncingIncognito(false);
+									}
+								})();
 							}}
 						/>
 						<div className="px-4 py-3">

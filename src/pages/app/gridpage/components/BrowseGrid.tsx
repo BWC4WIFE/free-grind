@@ -266,35 +266,6 @@ export function BrowseGrid({
 		onRestoredScrollChange(true);
 	}, [cards.length, hasRestoredScroll, isLoadingCards, browseCacheKey, rowMetrics.rowSizePx]);
 
-	if (isIncognitoActive) {
-		return (
-			/* Padding applied to maintain header alignment for non-grid states */
-			<div className="w-full px-[var(--app-px)]">
-				<div
-					className="flex flex-col items-center justify-center gap-4 text-center"
-					style={{ minHeight: "60dvh" }}
-				>
-					<div className="rounded-2xl bg-[var(--surface-2)] p-4">
-						<Ghost className="h-7 w-7 text-[var(--accent)]" />
-					</div>
-					<div className="grid max-w-xs gap-1.5">
-						<p className="text-base font-semibold text-[var(--text)]">
-							{t("browse_page.incognito_active_title")}
-						</p>
-						<p className="text-sm text-[var(--text-muted)]">
-							{t("browse_page.incognito_active_desc")}
-						</p>
-					</div>
-					{onManagePrivacy && (
-						<Button variant="primary" onClick={onManagePrivacy} leftIcon={<Ghost className="h-4 w-4" />}>
-							{t("browse_page.incognito_active_button")}
-						</Button>
-					)}
-				</div>
-			</div>
-		);
-	}
-
 	if (isLocationMissing) {
 		return (
 			/* Padding applied to maintain header alignment for non-grid states */

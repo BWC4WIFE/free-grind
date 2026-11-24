@@ -17,13 +17,19 @@ import { isVisitingMode } from "../../types/visiting";
 import { travelPlansResponseSchema, type TravelPlan, type TravelPlanPayload } from "../../types/travel";
 import { homeLocationSchema, type HomeLocation } from "../../types/home-location";
 import { ApiFunctionError, assertSuccess, parseJsonSafe } from "../apiHelpers";
-import { getIncognitoMode, isRecordProfileViewsEnabled } from "../../utils/privacy";
+import {
+	getIncognitoMode,
+	getSavedServerPrefsBeforeIncognito,
+	isRecordProfileViewsEnabled,
+	setSavedServerPrefsBeforeIncognito,
+} from "../../utils/privacy";
 import { appLog } from "../../utils/logger";
 import { coarsenGeohash } from "../../utils/geohash";
 import { getThumbImageUrl, validateMediaHash } from "../../utils/media";
 import { getActiveChatDbFileName, listMergedFavoriteProfileIds } from "../chatDb";
 
 const GET_PROFILES_CHUNK_IDS = 30;
+const INCOGNITO_PARK_GEOHASH = "s00000000000";
 const SUPPORTED_CASCADE_ITEM_TYPES = new Set([
 	"full_profile_v1",
 	"partial_profile_v1",
@@ -131,6 +137,91 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 	};
 
 	return {
+		async getServerPrivacyPrefs(): Promise<{
+			locationSearchOptOut?: boolean;
+			incognito?: boolean;
+			showOnMap?: boolean;
+		} | null> {
+			try {
+				const response = await fetchRest("/v3/me/prefs/settings");
+				if (response.status < 200 || response.status >= 300) {
+					return null;
+				}
+				const payload = await parseJsonSafe(response);
+				if (typeof payload !== "object" || payload === null) {
+					return null;
+				}
+				return payload as {
+					locationSearchOptOut?: boolean;
+					incognito?: boolean;
+					showOnMap?: boolean;
+				};
+			} catch (error) {
+				appLog.warn("[privacy] GET /v3/me/prefs/settings failed", error);
+				return null;
+			}
+		},
+
+		async updateServerPrivacyPrefs(settings: {
+			incognito?: boolean;
+			locationSearchOptOut?: boolean;
+			showOnMap?: boolean;
+		}): Promise<boolean> {
+			try {
+				const response = await fetchRest("/v3/me/prefs/settings", {
+					method: "PUT",
+					body: { settings },
+				});
+				return response.status >= 200 && response.status < 300;
+			} catch (error) {
+				appLog.warn("[privacy] PUT /v3/me/prefs/settings failed", error);
+				return false;
+			}
+		},
+
+		async syncIncognitoServerState(
+			enabled: boolean,
+			restoreGeohash?: string | null,
+		): Promise<void> {
+			if (enabled) {
+				const currentPrefs = await this.getServerPrivacyPrefs();
+				if (currentPrefs && !getSavedServerPrefsBeforeIncognito()) {
+					await setSavedServerPrefsBeforeIncognito({
+						locationSearchOptOut: currentPrefs.locationSearchOptOut,
+						showOnMap: currentPrefs.showOnMap,
+					});
+				}
+				// Best-effort native incognito flag (succeeds on Unlimited, 402 on Free).
+				await this.updateServerPrivacyPrefs({ incognito: true });
+				// Hide distance and map pin on all tiers (200 OK on Free).
+				await this.updateServerPrivacyPrefs({
+					locationSearchOptOut: true,
+					showOnMap: false,
+				});
+				// Park server location at an unpopulated ocean geohash so the account
+				// disappears from local /v4/cascade and /v7/search grids.
+				await syncServerLocation(INCOGNITO_PARK_GEOHASH, true);
+				return;
+			}
+
+			await this.updateServerPrivacyPrefs({ incognito: false });
+			const saved = getSavedServerPrefsBeforeIncognito();
+			if (saved) {
+				await this.updateServerPrivacyPrefs({
+					...(typeof saved.locationSearchOptOut === "boolean"
+						? { locationSearchOptOut: saved.locationSearchOptOut }
+						: {}),
+					...(typeof saved.showOnMap === "boolean"
+						? { showOnMap: saved.showOnMap }
+						: {}),
+				});
+				await setSavedServerPrefsBeforeIncognito(null);
+			}
+			if (restoreGeohash) {
+				await syncServerLocation(restoreGeohash, true);
+			}
+		},
+
 		async getBlockedProfileIds(): Promise<string[]> {
 			const response = await fetchRest("/v3.1/me/blocks");
 			await assertSuccess(response, t("profile_details.block_failed"));
@@ -286,14 +377,25 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 				tags?: string;
 			};
 		}): Promise<{ cards: BrowseCard[]; nextPage: number | null }> {
+			const incognitoActive = getIncognitoMode();
 			const coarseGeohash = safeCoarsenGeohash(params.geohash);
 			const coarseExploreGeohash = params.exploreGeohash
 				? safeCoarsenGeohash(params.exploreGeohash)
 				: undefined;
 
+			// While Incognito is active, never send the user's real geohash to
+			// PUT /v4/location or nearbyGeoHash; keep server location parked at
+			// INCOGNITO_PARK_GEOHASH and browse via exploreGeoHash instead.
+			const effectiveLocationGeohash = incognitoActive
+				? INCOGNITO_PARK_GEOHASH
+				: coarseGeohash;
+			const effectiveExploreGeohash = incognitoActive
+				? (coarseExploreGeohash ?? coarseGeohash)
+				: coarseExploreGeohash;
+
 			await syncServerLocation(
-				coarseGeohash,
-				Boolean(!coarseExploreGeohash && params.filters?.favorites && !params.page),
+				effectiveLocationGeohash,
+				Boolean(!effectiveExploreGeohash && params.filters?.favorites && !params.page),
 			);
 
 			// Cascade rejects nearbyGeoHash + exploreGeoHash together with
@@ -301,8 +403,8 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 			// last-known (real) location for "nearby" once exploreGeoHash is
 			// present, so send only one or the other, never both.
 			const queryParams = new URLSearchParams(
-				coarseExploreGeohash
-					? { exploreGeoHash: coarseExploreGeohash }
+				effectiveExploreGeohash
+					? { exploreGeoHash: effectiveExploreGeohash }
 					: { nearbyGeoHash: coarseGeohash },
 			);
 
@@ -474,7 +576,7 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 			// When Favorites filter is active on page 1, also pull merged favorites
 			// from master.sqlite3/local DBs and batch-hydrate live onlineUntil &
 			// distance via POST /v3/profiles so Online + Favorites works across accounts.
-			if (!coarseExploreGeohash && params.filters?.favorites && !params.page) {
+			if ((!coarseExploreGeohash || incognitoActive) && params.filters?.favorites && !params.page) {
 				try {
 					const mergedFavIds = await listMergedFavoriteProfileIds();
 					const existingIds = new Set(cards.map((c) => c.profileId));
