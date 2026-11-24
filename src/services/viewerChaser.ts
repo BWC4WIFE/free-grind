@@ -19,7 +19,7 @@ import { appLog } from "../utils/logger";
 
 type ViewerChaseApi = {
 	getViews: () => Promise<unknown>;
-	getProfilesByIds: (ids: string[]) => Promise<unknown[]>;
+	getProfilesByIds: (profileIds: (string | number)[]) => Promise<unknown>;
 };
 
 const IDLE_CHASE_INTERVAL_MS = 90_000;

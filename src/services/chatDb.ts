@@ -3665,7 +3665,7 @@ export async function listMasterConversations(limit = 250): Promise<Conversation
 			`,
 			[limit],
 		);
-		return rows.map(rowToConversationEntry);
+		return rows.map((row) => rowToStoredConversation(row).entry);
 	} catch {
 		return [];
 	}

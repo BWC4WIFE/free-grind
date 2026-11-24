@@ -42,3 +42,14 @@
 - Modified: `src/contexts/PreferencesContext.tsx`
 - Modified: `src/App.tsx`
 - Created: `src/pages/app/chat/chatThreadHelpers.ts`
+
+[2026-11-25 02:27] - Task: Fix 7 Windows TypeScript build errors and add Deep Sweep grid discovery
+- Created: `src/pages/app/gridpage/deepSweep.ts`
+- Modified: `src/services/viewerChaser.ts`
+- Modified: `src/pages/app/BrowseLocationPage.tsx`
+- Modified: `src/pages/app/LocationOverlay.tsx`
+- Modified: `src/pages/app/profile-editor/TravelPlanEditorSheet.tsx`
+- Modified: `src/pages/app/ChatPage.tsx`
+- Modified: `src/services/chatDb.ts`
+- Modified: `src/utils/crashOverlay.ts`
+- Modified: `src/pages/app/GridPage.tsx`

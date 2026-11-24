@@ -27,7 +27,7 @@ type TravelPlanEditorSheetProps = {
 };
 
 export function TravelPlanEditorSheet({ profileId, plan, onClose }: TravelPlanEditorSheetProps) {
-	const { t } = useTranslation();
+	const { t, i18n } = useTranslation();
 	const isEditing = plan != null;
 
 	const [isClosing, setIsClosing] = useState(false);

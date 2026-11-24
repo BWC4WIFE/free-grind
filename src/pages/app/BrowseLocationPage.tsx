@@ -16,7 +16,7 @@ import { LocationSettingsPanel } from "./gridpage/components/LocationSettingsPan
 
 export function BrowseLocationPage() {
 	const navigate = useNavigate();
-	const { t } = useTranslation();
+	const { t, i18n } = useTranslation();
 	const { setPreferences, geohash, locationName } = usePreferences();
 	const [isDetectingLocation, setIsDetectingLocation] = useState(false);
 	const [locationQuery, setLocationQuery] = useState("");

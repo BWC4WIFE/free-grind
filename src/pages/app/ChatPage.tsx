@@ -1578,7 +1578,10 @@ export function ChatPage() {
 								chunks.push(partnerIds.slice(i, i + 50));
 							}
 							const batchResults = await Promise.all(
-								chunks.map((chunk) => apiFunctions.getProfilesByIds(chunk).catch(() => [])),
+								chunks.map(async (chunk) => {
+									const res = await service.getProfilesByIds(chunk).catch(() => []);
+									return Array.isArray(res) ? res : [];
+								}),
 							);
 							for (const rawProfile of batchResults.flat()) {
 								if (!rawProfile || typeof rawProfile !== "object") continue;

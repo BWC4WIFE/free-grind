@@ -1,6 +1,6 @@
 import { useAuth } from "../../contexts/useAuth";
 import { useApi } from "../../hooks/useApi";
-import { MapPin, Navigation, SlidersHorizontal, ListFilter, Star, Plane, Search, Eye, EyeOff, Check, Copy, KeyRound, Loader2, RefreshCw, Settings, X } from "lucide-react";
+import { MapPin, Navigation, SlidersHorizontal, ListFilter, Star, Plane, Search, Eye, EyeOff, Check, Copy, KeyRound, Loader2, RefreshCw, Settings, Sparkles, X } from "lucide-react";
 import { RightNowIcon } from "../../components/icons/RightNowIcon";
 import { useLocation, useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
@@ -15,6 +15,7 @@ import { useExploreMode } from "../../contexts/ExploreModeContext";
 import { type BrowseCard, type ProfileDetail } from "./GridPage.types";
 import { BrowseGrid } from "./gridpage/components/BrowseGrid";
 import { mergeBrowseCardImages } from "./gridpage/utils";
+import { loadDeepSweepEnabled, runDeepSweep, saveDeepSweepEnabled } from "./gridpage/deepSweep";
 import { FeedScrollContainer } from "../../components/ui/FeedScrollContainer";
 import { ProfileDetailsModal } from "./gridpage/components/ProfileDetailsModal";
 import {
@@ -118,6 +119,9 @@ export function GridPage() {
 	const [isLoadingCards, setIsLoadingCards] = useState(true);
 	const [isLoadingMoreCards, setIsLoadingMoreCards] = useState(false);
 	const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+	const [deepSweepEnabled, setDeepSweepEnabled] = useState<boolean>(() => loadDeepSweepEnabled());
+	const [isDeepSweeping, setIsDeepSweeping] = useState(false);
+	const [deepSweepAddedCount, setDeepSweepAddedCount] = useState<number | null>(null);
 	// Cascade encodes this as a page number, explore (/v7/search) as a
 	// (distance, profileId) cursor — see encodeSearchCursor/decodeSearchCursor.
 	const [nextPage, setNextPage] = useState<string | null>(null);
@@ -1033,6 +1037,50 @@ export function GridPage() {
 		});
 	}, [browseCacheKey, geohash, loadBrowseCards, refreshLocation, useAutoLocation]);
 
+	const performDeepSweep = useCallback(
+		async (overrideGeohash?: string) => {
+			const activeGeohash = overrideGeohash || geohash;
+			if (!activeGeohash || getIncognitoMode() || isDeepSweeping) return;
+			setIsDeepSweeping(true);
+			try {
+				const base = cardsRef.current;
+				const swept = await runDeepSweep({
+					activeGeohash,
+					exploreGeohash: exploreLocation?.geohash,
+					baseCards: base,
+					fetchSlice: ({ exploreGeohash, filterOverrides }) =>
+						getBrowseCardsWithTimeout({
+							geohash: activeGeohash,
+							exploreGeohash,
+							filters: {
+								...browseRequestFilters,
+								...filterOverrides,
+							},
+						}),
+				});
+				if (!isMountedRef.current) return;
+				const mergedCards = mergeBrowseCardImages(cardsRef.current, swept.cards);
+				setCards(mergedCards);
+				setDeepSweepAddedCount(swept.addedCount);
+				if (browseCacheKey) {
+					setCachedBrowseCards(browseCacheKey, mergedCards, nextPage);
+				}
+				void upsertChatContactIndexFromGrid(
+					mergedCards.map((card) => ({
+						profileId: card.profileId,
+						unreadCount: card.unreadCount ?? 0,
+					})),
+				).catch(() => undefined);
+				appLog.info("[grid] deep sweep merged unique profiles", { addedCount: swept.addedCount, total: mergedCards.length });
+			} finally {
+				if (isMountedRef.current) {
+					setIsDeepSweeping(false);
+				}
+			}
+		},
+		[browseCacheKey, browseRequestFilters, exploreLocation, geohash, getBrowseCardsWithTimeout, isDeepSweeping, nextPage],
+	);
+
 	// Desktop has no pull-to-refresh gesture (PullToRefreshContainer only
 	// listens for touch events), so this button is the desktop equivalent —
 	// same refresh logic as the mobile pull gesture, with its own loading
@@ -1042,10 +1090,13 @@ export function GridPage() {
 		setIsManualRefreshing(true);
 		try {
 			await handleAutoRefresh();
+			if (deepSweepEnabled) {
+				await performDeepSweep();
+			}
 		} finally {
 			setIsManualRefreshing(false);
 		}
-	}, [handleAutoRefresh, isManualRefreshing, isLoadingCards, isLoadingMoreCards]);
+	}, [deepSweepEnabled, handleAutoRefresh, isManualRefreshing, isLoadingCards, isLoadingMoreCards, performDeepSweep]);
 
 	useEffect(() => {
 		if (typeof window === "undefined") return;
@@ -1633,11 +1684,14 @@ export function GridPage() {
 							activeGeohash = next;
 						}
 					}
-					return loadBrowseCards({
+					await loadBrowseCards({
 						preferCache: false,
 						showLoadingState: false,
 						overrideGeohash: activeGeohash || undefined
 					});
+					if (deepSweepEnabled) {
+						await performDeepSweep(activeGeohash || undefined);
+					}
 				}}
 				isDisabled={isLoadingCards || isLoadingMoreCards || isIncognitoActive}
 				refreshingLabel={t("browse_page.refreshing_feed")}
@@ -2041,7 +2095,7 @@ export function GridPage() {
 											variant="icon"
 											icon={
 												<RefreshCw
-													className={cn("h-3.5 w-3.5", isManualRefreshing && "animate-spin")}
+													className={cn("h-3.5 w-3.5", (isManualRefreshing || isDeepSweeping) && "animate-spin")}
 												/>
 											}
 											label={t("grid.refresh", { defaultValue: "Refresh grid" })}
@@ -2050,6 +2104,34 @@ export function GridPage() {
 											color={exploreLocation ? "explore" : "accent"}
 										/>
 									)}
+
+									<FilterPill
+										icon={
+											<Sparkles
+												className={cn("h-3.5 w-3.5", isDeepSweeping && "animate-pulse")}
+											/>
+										}
+										label={t("grid.deep_sweep", { defaultValue: "Deep Sweep" })}
+										active={deepSweepEnabled}
+										badge={
+											deepSweepEnabled && deepSweepAddedCount != null && deepSweepAddedCount > 0 ? (
+												<span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[10px] leading-none">
+													+{deepSweepAddedCount}
+												</span>
+											) : undefined
+										}
+										onClick={() => {
+											const next = !deepSweepEnabled;
+											setDeepSweepEnabled(next);
+											saveDeepSweepEnabled(next);
+											if (next) {
+												void performDeepSweep();
+											} else {
+												setDeepSweepAddedCount(null);
+											}
+										}}
+										color={exploreLocation ? "explore" : "accent"}
+									/>
 								</div>
 							</div>
 

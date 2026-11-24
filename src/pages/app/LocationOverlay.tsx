@@ -118,7 +118,7 @@ function SavedLocationRow({
 }
 
 export function LocationOverlay({ onClose, exploreLocation, onSetExploreLocation }: LocationOverlayProps) {
-	const { t } = useTranslation();
+	const { t, i18n } = useTranslation();
 	const { setPreferences, geohash, locationName, useAutoLocation, autoFocusLocationSearch } = usePreferences();
 	const [isClosing, setIsClosing] = useState(false);
 	const isClosingRef = useRef(false);

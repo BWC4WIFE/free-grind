@@ -128,8 +128,8 @@ function patchTauriEventUnlisten(): boolean {
 	const original = internals.unregisterListener.bind(internals);
 	internals.unregisterListener = (event: string, eventId: number) => {
 		try {
-			const result = original(event, eventId);
-			if (result && typeof (result as Promise<unknown>).then === "function") {
+			const result: unknown = original(event, eventId);
+			if (result != null && typeof (result as Promise<unknown>).then === "function") {
 				return Promise.resolve(result).catch((error) => {
 					if (!swallowBenignUnlistenError(error)) {
 						throw error;
