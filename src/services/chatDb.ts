@@ -607,6 +607,16 @@ async function initChatDbSchema(db: Database, label: string): Promise<void> {
 				await db.execute(
 					"CREATE INDEX IF NOT EXISTS idx_account_profile_favorites_profile ON account_profile_favorites(profile_id)",
 				);
+
+				await db.execute(`
+					CREATE TABLE IF NOT EXISTS favorite_notes (
+						profile_id TEXT PRIMARY KEY,
+						notes TEXT,
+						phone_number TEXT,
+						source_account_id TEXT,
+						updated_at INTEGER NOT NULL DEFAULT 0
+					)
+				`);
 			}, label);
 }
 
@@ -3606,4 +3616,192 @@ export async function getKnownProfileDirectory(): Promise<{
 	}
 
 	return { byProfileId, byImageHash };
+}
+
+export async function listMergedFavoriteProfileIds(): Promise<string[]> {
+	const db = await getDb();
+	const ids = new Set<string>();
+	try {
+		const activeRows = await db.select<{ profile_id: string }[]>(
+			`
+			SELECT profile_id FROM known_profiles WHERE is_favorite = 1
+			UNION
+			SELECT other_profile_id AS profile_id FROM conversations WHERE favorite = 1 AND other_profile_id IS NOT NULL
+			`,
+		);
+		for (const r of activeRows) {
+			if (r.profile_id) ids.add(r.profile_id);
+		}
+	} catch {
+		// ignore
+	}
+	try {
+		const mdb = await getMasterDb();
+		const masterRows = await mdb.select<{ profile_id: string }[]>(
+			`
+			SELECT profile_id FROM known_profiles WHERE is_favorite = 1
+			UNION
+			SELECT profile_id FROM account_profile_favorites
+			`,
+		);
+		for (const r of masterRows) {
+			if (r.profile_id) ids.add(r.profile_id);
+		}
+	} catch {
+		// ignore
+	}
+	return Array.from(ids);
+}
+
+export async function listMasterConversations(limit = 250): Promise<ConversationEntry[]> {
+	try {
+		const mdb = await getMasterDb();
+		const rows = await mdb.select<ConversationRow[]>(
+			`
+			SELECT * FROM conversations
+			WHERE COALESCE(archived, 0) = 0
+			ORDER BY COALESCE(last_activity_timestamp, 0) DESC
+			LIMIT $1
+			`,
+			[limit],
+		);
+		return rows.map(rowToConversationEntry);
+	} catch {
+		return [];
+	}
+}
+
+function mergeDelimitedText(
+	existing: string | null | undefined,
+	incoming: string | null | undefined,
+	delimiter: string,
+): string | null {
+	const pieces: string[] = [];
+	for (const raw of [existing, incoming]) {
+		if (!raw) continue;
+		for (const part of raw.split(delimiter)) {
+			const clean = part.trim();
+			if (clean && !pieces.includes(clean)) {
+				pieces.push(clean);
+			}
+		}
+	}
+	return pieces.length > 0 ? pieces.join(delimiter) : null;
+}
+
+export async function upsertFavoriteNoteLocal(
+	profileId: string,
+	notes: string,
+	phoneNumber: string,
+	options?: { merge?: boolean },
+): Promise<void> {
+	const id = sanitizeProfileId(profileId);
+	if (!id) return;
+	const db = await getDb();
+	const now = Date.now();
+	const sourceAccountId = getActiveDbOwnerId();
+	const cleanNote = notes.trim() || null;
+	const cleanPhone = phoneNumber.trim() || null;
+
+	const writeTo = async (targetDb: Database, shouldMerge: boolean) => {
+		let finalNote = cleanNote;
+		let finalPhone = cleanPhone;
+		if (shouldMerge) {
+			const existing = await targetDb.select<{ notes: string | null; phone_number: string | null }[]>(
+				"SELECT notes, phone_number FROM favorite_notes WHERE profile_id = $1 LIMIT 1",
+				[id],
+			);
+			if (existing[0]) {
+				finalNote = mergeDelimitedText(existing[0].notes, cleanNote, "\n---\n");
+				finalPhone = mergeDelimitedText(existing[0].phone_number, cleanPhone, " / ");
+			}
+		}
+		await targetDb.execute(
+			`
+			INSERT INTO favorite_notes (profile_id, notes, phone_number, source_account_id, updated_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT(profile_id) DO UPDATE SET
+				notes = excluded.notes,
+				phone_number = excluded.phone_number,
+				source_account_id = COALESCE(NULLIF(excluded.source_account_id, ''), favorite_notes.source_account_id),
+				updated_at = excluded.updated_at
+			`,
+			[id, finalNote, finalPhone, sourceAccountId, now],
+		);
+	};
+
+	await executeWithLockRetry(db, "upsert-favorite-note", async () => {
+		await writeTo(db, options?.merge === true);
+	});
+	mirrorToMasterDb("upsert-favorite-note", (mdb) => writeTo(mdb, options?.merge !== false));
+}
+
+export async function deleteFavoriteNoteLocal(profileId: string): Promise<void> {
+	const id = sanitizeProfileId(profileId);
+	if (!id) return;
+	const db = await getDb();
+	await executeWithLockRetry(db, "delete-favorite-note", async () => {
+		await db.execute("DELETE FROM favorite_notes WHERE profile_id = $1", [id]);
+	});
+}
+
+export async function getMergedFavoriteNoteLocal(
+	profileId: string,
+): Promise<{ notes: string; phoneNumber: string } | null> {
+	const id = sanitizeProfileId(profileId);
+	if (!id) return null;
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<{ notes: string | null; phone_number: string | null }[]>(
+			"SELECT notes, phone_number FROM favorite_notes WHERE profile_id = $1 LIMIT 1",
+			[id],
+		),
+		getMasterDb()
+			.then((mdb) =>
+				mdb.select<{ notes: string | null; phone_number: string | null }[]>(
+					"SELECT notes, phone_number FROM favorite_notes WHERE profile_id = $1 LIMIT 1",
+					[id],
+				),
+			)
+			.catch(() => []),
+	]);
+	let mergedNote: string | null = null;
+	let mergedPhone: string | null = null;
+	for (const row of [...activeRows, ...masterRows]) {
+		mergedNote = mergeDelimitedText(mergedNote, row.notes, "\n---\n");
+		mergedPhone = mergeDelimitedText(mergedPhone, row.phone_number, " / ");
+	}
+	if (!mergedNote && !mergedPhone) return null;
+	return { notes: mergedNote ?? "", phoneNumber: mergedPhone ?? "" };
+}
+
+export async function listMergedFavoriteNotesLocal(): Promise<
+	Array<{ counterpartyId: string; notes: string; phoneNumber: string }>
+> {
+	const [activeRows, masterRows] = await Promise.all([
+		(await getDb()).select<{ profile_id: string; notes: string | null; phone_number: string | null }[]>(
+			"SELECT profile_id, notes, phone_number FROM favorite_notes",
+		),
+		getMasterDb()
+			.then((mdb) =>
+				mdb.select<{ profile_id: string; notes: string | null; phone_number: string | null }[]>(
+					"SELECT profile_id, notes, phone_number FROM favorite_notes",
+				),
+			)
+			.catch(() => []),
+	]);
+	const byId = new Map<string, { notes: string | null; phoneNumber: string | null }>();
+	for (const row of [...masterRows, ...activeRows]) {
+		const prev = byId.get(row.profile_id);
+		byId.set(row.profile_id, {
+			notes: mergeDelimitedText(prev?.notes, row.notes, "\n---\n"),
+			phoneNumber: mergeDelimitedText(prev?.phoneNumber, row.phone_number, " / "),
+		});
+	}
+	return Array.from(byId.entries())
+		.filter(([, v]) => v.notes || v.phoneNumber)
+		.map(([counterpartyId, v]) => ({
+			counterpartyId,
+			notes: v.notes ?? "",
+			phoneNumber: v.phoneNumber ?? "",
+		}));
 }

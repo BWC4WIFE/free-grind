@@ -159,14 +159,21 @@ export function useInterestData() {
 			let updatedDirectory = dbDirectory;
 			if (knownUpserts.length > 0) {
 				try {
-					const { favoriteHashesToCache } = await chatDb.upsertKnownProfiles(knownUpserts);
-					for (const hash of favoriteHashesToCache) {
-						void fetchAndStoreAvatar(hash);
-					}
+					await chatDb.upsertKnownProfiles(knownUpserts);
 					updatedDirectory = await chatDb.getKnownProfileDirectory();
 				} catch {
 					// Best-effort persistence; continue with existing directory metadata.
 				}
+			}
+
+			// Cache every viewer/tap avatar locally (not only favorites) so
+			// Viewed Me doesn't lose photos when a profile swaps or disappears.
+			const viewerHashes = new Set<string>();
+			for (const item of [...enrichedViewsResult.items, ...normalizedTaps, ...enrichedSentResult.items]) {
+				if (item.imageHash) viewerHashes.add(item.imageHash);
+			}
+			for (const hash of Array.from(viewerHashes).slice(0, 25)) {
+				void fetchAndStoreAvatar(hash);
 			}
 
 			const attachHistoryMeta = (item: InterestItem): InterestItem => {

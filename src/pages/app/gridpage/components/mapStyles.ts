@@ -11,6 +11,43 @@ export function getMapStyleUrl(scheme: "light" | "dark"): string {
 }
 
 /**
+ * Forces CARTO OpenMapTiles vector symbol layers to prefer the app's UI language
+ * (e.g. `name:en` / `name:de`) before falling back to local/regional script (`name`),
+ * instead of rendering Thai/Arabic/CJK labels when browsing those regions.
+ */
+export function localizeMapLabels(map: any, language: string | null | undefined): void {
+	const baseLang = (language || "en").trim().toLowerCase().split(/[-_]/)[0] || "en";
+	const textFieldExpr: unknown[] =
+		baseLang === "en"
+			? ["coalesce", ["get", "name:en"], ["get", "name_en"], ["get", "name"]]
+			: [
+					"coalesce",
+					["get", `name:${baseLang}`],
+					["get", "name:en"],
+					["get", "name_en"],
+					["get", "name"],
+			  ];
+
+	try {
+		for (const layer of map.getStyle()?.layers ?? []) {
+			if (layer.type !== "symbol") continue;
+			const layout = layer.layout;
+			if (!layout || layout["text-field"] == null) continue;
+			// Skip numeric shields / house numbers that format `{ref}` or `{housenumber}`
+			const id = String(layer.id || "");
+			if (/housenumber|shield/i.test(id)) continue;
+			try {
+				map.setLayoutProperty(id, "text-field", textFieldExpr);
+			} catch {
+				// Ignore layers whose expression or source doesn't support text-field override
+			}
+		}
+	} catch {
+		// Best-effort localization
+	}
+}
+
+/**
  * CARTO's dark-matter style defaults to a near-monochrome black map where
  * roads/rail barely register. Re-tint land/water/roads with a Google
  * Maps-style dark palette (blue water, teal-green land, light visible

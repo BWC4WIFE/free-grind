@@ -63,6 +63,7 @@ import { useProfileAlbumStatus } from "../../../../hooks/useProfileAlbumStatus";
 import { captureAlbum, getLocalAlbum } from "../../../../services/albumStore";
 import type { AlbumViewer } from "../../../../types/shared-albums";
 import { saveAllAlbumMedia, saveAllMedia } from "../../../../utils/albumMedia";
+import * as chatDb from "../../../../services/chatDb";
 
 type OwnProfileData = { tags: string[] };
 const ownProfileDataCache = new Map<string, OwnProfileData>();
@@ -513,14 +514,43 @@ export function ProfileDetailsModal({
 		setProfilePhoneNumber("");
 		setIsEditingNote(false);
 
-		apiFunctions.getProfileNote(String(messageProfileId))
-			.then((data) => {
-				if (!cancelled) {
-					setProfileNote(data.notes ?? "");
-					setProfilePhoneNumber(data.phoneNumber ?? "");
+		Promise.allSettled([
+			apiFunctions.getProfileNote(String(messageProfileId)),
+			chatDb.getMergedFavoriteNoteLocal(String(messageProfileId)),
+		])
+			.then(([apiRes, localRes]) => {
+				if (cancelled) return;
+				const apiData = apiRes.status === "fulfilled" ? apiRes.value : null;
+				const localData = localRes.status === "fulfilled" ? localRes.value : null;
+				if (apiData && (apiData.notes || apiData.phoneNumber)) {
+					void chatDb
+						.upsertFavoriteNoteLocal(
+							String(messageProfileId),
+							apiData.notes ?? "",
+							apiData.phoneNumber ?? "",
+							{ merge: true },
+						)
+						.catch(() => undefined);
 				}
+				const noteParts: string[] = [];
+				for (const src of [localData?.notes, apiData?.notes]) {
+					if (!src) continue;
+					for (const piece of src.split("\n---\n")) {
+						const clean = piece.trim();
+						if (clean && !noteParts.includes(clean)) noteParts.push(clean);
+					}
+				}
+				const phoneParts: string[] = [];
+				for (const src of [localData?.phoneNumber, apiData?.phoneNumber]) {
+					if (!src) continue;
+					for (const piece of src.split(" / ")) {
+						const clean = piece.trim();
+						if (clean && !phoneParts.includes(clean)) phoneParts.push(clean);
+					}
+				}
+				setProfileNote(noteParts.join("\n---\n"));
+				setProfilePhoneNumber(phoneParts.join(" / "));
 			})
-			.catch(() => {})
 			.finally(() => {
 				if (!cancelled) setIsLoadingNote(false);
 			});
@@ -536,6 +566,9 @@ export function ProfileDetailsModal({
 				notes: noteDraft,
 				phoneNumber: phoneNumberDraft,
 			});
+			await chatDb
+				.upsertFavoriteNoteLocal(String(messageProfileId), noteDraft, phoneNumberDraft, { merge: false })
+				.catch(() => undefined);
 			setProfileNote(noteDraft);
 			setProfilePhoneNumber(phoneNumberDraft);
 			setIsEditingNote(false);
@@ -552,6 +585,7 @@ export function ProfileDetailsModal({
 		setIsSavingNote(true);
 		try {
 			await apiFunctions.deleteProfileNote(String(messageProfileId));
+			await chatDb.deleteFavoriteNoteLocal(String(messageProfileId)).catch(() => undefined);
 			setProfileNote("");
 			setProfilePhoneNumber("");
 			setIsEditingNote(false);

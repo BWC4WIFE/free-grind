@@ -115,17 +115,12 @@ export function BrowseLocationPage() {
 		setIsSearchingLocation(true);
 
 		try {
+			const lang = encodeURIComponent((i18n.language || "en").trim() || "en");
 			const response = await fetch(
-				`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(
+				`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&accept-language=${lang}&q=${encodeURIComponent(
 					query,
 				)}`,
-				{
-					signal,
-					headers: {
-						"User-Agent":
-							"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-					},
-				},
+				{ signal },
 			);
 
 			if (!response.ok) {

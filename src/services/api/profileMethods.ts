@@ -21,7 +21,7 @@ import { getIncognitoMode, isRecordProfileViewsEnabled } from "../../utils/priva
 import { appLog } from "../../utils/logger";
 import { coarsenGeohash } from "../../utils/geohash";
 import { getThumbImageUrl, validateMediaHash } from "../../utils/media";
-import { getActiveChatDbFileName } from "../chatDb";
+import { getActiveChatDbFileName, listMergedFavoriteProfileIds } from "../chatDb";
 
 const GET_PROFILES_CHUNK_IDS = 30;
 const SUPPORTED_CASCADE_ITEM_TYPES = new Set([
@@ -470,6 +470,71 @@ export function createProfileMethods(fetchRest: RestFetcher, t: (key: string, op
 						(typeof resolved.rightNow === "string" ? resolved.rightNow : null),
 				};
 			});
+
+			// When Favorites filter is active on page 1, also pull merged favorites
+			// from master.sqlite3/local DBs and batch-hydrate live onlineUntil &
+			// distance via POST /v3/profiles so Online + Favorites works across accounts.
+			if (!coarseExploreGeohash && params.filters?.favorites && !params.page) {
+				try {
+					const mergedFavIds = await listMergedFavoriteProfileIds();
+					const existingIds = new Set(cards.map((c) => c.profileId));
+					const missingNumericIds = mergedFavIds
+						.filter((id) => !existingIds.has(id))
+						.map((id) => Number(id))
+						.filter((n) => Number.isFinite(n) && n > 0)
+						.slice(0, 120);
+
+					if (missingNumericIds.length > 0) {
+						const batches: number[][] = [];
+						for (let i = 0; i < missingNumericIds.length; i += GET_PROFILES_CHUNK_IDS) {
+							batches.push(missingNumericIds.slice(i, i + GET_PROFILES_CHUNK_IDS));
+						}
+						const extraResponses = await Promise.all(
+							batches.map(async (targetProfileIds) => {
+								const res = await fetchRest("/v3/profiles", {
+									method: "POST",
+									body: { targetProfileIds },
+								});
+								if (res.status < 200 || res.status >= 300) return [];
+								const data = await parseJsonSafe(res);
+								return typeof data === "object" &&
+									data !== null &&
+									Array.isArray((data as { profiles?: unknown }).profiles)
+									? (data as { profiles: unknown[] }).profiles
+									: [];
+							}),
+						);
+						for (const rawProfile of extraResponses.flat()) {
+							if (typeof rawProfile !== "object" || rawProfile === null) continue;
+							const rec = rawProfile as Record<string, unknown>;
+							const pid = rec.profileId != null ? String(rec.profileId) : "";
+							if (!pid || existingIds.has(pid)) continue;
+							const onlineUntil = typeof rec.onlineUntil === "number" ? rec.onlineUntil : null;
+							if (params.filters?.onlineOnly && !(typeof onlineUntil === "number" && onlineUntil > nowMs)) {
+								continue;
+							}
+							existingIds.add(pid);
+							cards.push({
+								profileId: pid,
+								displayName: typeof rec.displayName === "string" ? rec.displayName : null,
+								age: typeof rec.age === "number" ? rec.age : null,
+								distanceMeters: typeof rec.distance === "number" ? rec.distance : null,
+								primaryImageUrl: normalizePrimaryImageUrl(rec, null),
+								onlineUntil,
+								lastOnline: typeof rec.seen === "number" ? rec.seen : null,
+								favorite: true,
+								chatted:
+									typeof rec.lastChatTimestamp === "number"
+										? nowMs - rec.lastChatTimestamp < 24 * 60 * 60 * 1000
+										: undefined,
+								rightNow: typeof rec.rightNow === "string" ? rec.rightNow : null,
+							});
+						}
+					}
+				} catch (error) {
+					appLog.warn("[browse] Failed to merge master favorites", error);
+				}
+			}
 
 			return {
 				cards,

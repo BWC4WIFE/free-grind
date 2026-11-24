@@ -112,9 +112,10 @@ export function TravelPlanEditorSheet({ profileId, plan, onClose }: TravelPlanEd
 		setLastSearchedQuery(query);
 		setIsSearchingLocation(true);
 		try {
+			const lang = encodeURIComponent((i18n.language || "en").trim() || "en");
 			const res = await fetch(
-				`https://nominatim.openstreetmap.org/search?format=json&limit=6&q=${encodeURIComponent(query)}`,
-				{ signal, headers: { "User-Agent": "Mozilla/5.0 (compatible)" } },
+				`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&accept-language=${lang}&q=${encodeURIComponent(query)}`,
+				{ signal },
 			);
 			if (!res.ok) throw new Error("search failed");
 			setLocationResults(z.array(geocodeResultSchema).parse(await res.json()));

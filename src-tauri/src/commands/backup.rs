@@ -342,6 +342,19 @@ const EXPORT_TABLES: &[TableSpec] = &[
         ],
         blob_columns: &[],
     },
+    TableSpec {
+        name: "favorite_notes",
+        primary_key: "profile_id",
+        category: "chat_messages",
+        columns: &[
+            "profile_id",
+            "notes",
+            "phone_number",
+            "source_account_id",
+            "updated_at",
+        ],
+        blob_columns: &[],
+    },
 ];
 
 #[derive(Clone, Serialize)]
@@ -442,6 +455,21 @@ pub struct TablePreviewResult {
     rows: Vec<Map<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalSearchResultItem {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<String>,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtitle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -2939,6 +2967,213 @@ pub fn list_account_locations(app: AppHandle) -> Result<Vec<AccountLocationEntry
         .app_data_dir()
         .map_err(|e| AppError::Backup(format!("failed to resolve app data dir: {e}")))?;
     list_account_locations_in_dir(&dir)
+}
+
+#[tauri::command]
+pub fn global_search_master(
+    app: AppHandle,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<GlobalSearchResultItem>, AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Backup(format!("failed to resolve app data dir: {e}")))?;
+
+    let master_path = dir.join("master.sqlite3");
+    let target_path = if master_path.is_file() {
+        master_path
+    } else {
+        let mut found: Option<PathBuf> = None;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                        if name.starts_with("chat-") && name.ends_with(".sqlite3") {
+                            found = Some(p);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        match found {
+            Some(p) => p,
+            None => return Ok(Vec::new()),
+        }
+    };
+
+    let conn = Connection::open_with_flags(&target_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let _ = conn.execute_batch("PRAGMA busy_timeout = 3000;");
+    let max_items = limit.unwrap_or(30).clamp(1, 100) as usize;
+    let pattern = format!("%{}%", query.trim());
+    let mut items: Vec<GlobalSearchResultItem> = Vec::new();
+
+    // 1. known_profiles
+    if table_exists(&conn, "known_profiles").unwrap_or(false) {
+        let sql = "SELECT profile_id, display_name, updated_at FROM known_profiles WHERE display_name LIKE ?1 OR profile_id LIKE ?1 ORDER BY updated_at DESC LIMIT ?2";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            if let Ok(mut rows) = stmt.query(rusqlite::params![pattern, max_items as i64]) {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(pid), Ok(name), Ok(ts)) = (
+                        r.get::<_, String>(0),
+                        r.get::<_, Option<String>>(1),
+                        r.get::<_, Option<i64>>(2),
+                    ) {
+                        items.push(GlobalSearchResultItem {
+                            kind: "profile".to_owned(),
+                            profile_id: Some(pid),
+                            conversation_id: None,
+                            title: name.unwrap_or_else(|| "Unknown Profile".to_owned()),
+                            subtitle: Some(format!("Profile ID: {}", pid)),
+                            timestamp: ts,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. conversations
+    if items.len() < max_items && table_exists(&conn, "conversations").unwrap_or(false) {
+        let sql = "SELECT conversation_id, other_profile_id, name, updated_at FROM conversations WHERE name LIKE ?1 OR conversation_id LIKE ?1 OR other_profile_id LIKE ?1 ORDER BY updated_at DESC LIMIT ?2";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            let rem = (max_items - items.len()) as i64;
+            if let Ok(mut rows) = stmt.query(rusqlite::params![pattern, rem]) {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(cid), Ok(other), Ok(name), Ok(ts)) = (
+                        r.get::<_, String>(0),
+                        r.get::<_, Option<String>>(1),
+                        r.get::<_, Option<String>>(2),
+                        r.get::<_, Option<i64>>(3),
+                    ) {
+                        items.push(GlobalSearchResultItem {
+                            kind: "conversation".to_owned(),
+                            profile_id: other,
+                            conversation_id: Some(cid),
+                            title: name.unwrap_or_else(|| "Conversation".to_owned()),
+                            subtitle: None,
+                            timestamp: ts,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. messages
+    if items.len() < max_items && table_exists(&conn, "messages").unwrap_or(false) {
+        let sql = "SELECT message_id, conversation_id, body_json, timestamp FROM messages WHERE body_json LIKE ?1 ORDER BY timestamp DESC LIMIT ?2";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            let rem = (max_items - items.len()) as i64;
+            if let Ok(mut rows) = stmt.query(rusqlite::params![pattern, rem]) {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(_mid), Ok(cid), Ok(body), Ok(ts)) = (
+                        r.get::<_, String>(0),
+                        r.get::<_, String>(1),
+                        r.get::<_, Option<String>>(2),
+                        r.get::<_, i64>(3),
+                    ) {
+                        let text = extract_readable_message_text(body.as_deref(), None)
+                            .unwrap_or_else(|| "Message".to_owned());
+                        items.push(GlobalSearchResultItem {
+                            kind: "message".to_owned(),
+                            profile_id: None,
+                            conversation_id: Some(cid),
+                            title: text,
+                            subtitle: None,
+                            timestamp: Some(ts),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. favorite_notes / restored_favorite_profiles
+    for tname in ["favorite_notes", "restored_favorite_profiles"] {
+        if items.len() < max_items && table_exists(&conn, tname).unwrap_or(false) {
+            let sql = format!("SELECT profile_id, notes, updated_at FROM {} WHERE notes LIKE ?1 OR profile_id LIKE ?1 ORDER BY updated_at DESC LIMIT ?2", tname);
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                let rem = (max_items - items.len()) as i64;
+                if let Ok(mut rows) = stmt.query(rusqlite::params![pattern, rem]) {
+                    while let Ok(Some(r)) = rows.next() {
+                        if let (Ok(pid), Ok(notes), Ok(ts)) = (
+                            r.get::<_, String>(0),
+                            r.get::<_, Option<String>>(1),
+                            r.get::<_, Option<i64>>(2),
+                        ) {
+                            items.push(GlobalSearchResultItem {
+                                kind: "note".to_owned(),
+                                profile_id: Some(pid),
+                                conversation_id: None,
+                                title: notes.unwrap_or_else(|| "Note".to_owned()),
+                                subtitle: None,
+                                timestamp: ts,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. saved_locations
+    if items.len() < max_items && table_exists(&conn, "saved_locations").unwrap_or(false) {
+        let sql = "SELECT id, name, geohash, created_at FROM saved_locations WHERE name LIKE ?1 OR geohash LIKE ?1 ORDER BY created_at DESC LIMIT ?2";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            let rem = (max_items - items.len()) as i64;
+            if let Ok(mut rows) = stmt.query(rusqlite::params![pattern, rem]) {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(_id), Ok(name), Ok(gh), Ok(ts)) = (
+                        r.get::<_, String>(0),
+                        r.get::<_, Option<String>>(1),
+                        r.get::<_, Option<String>>(2),
+                        r.get::<_, i64>(3),
+                    ) {
+                        items.push(GlobalSearchResultItem {
+                            kind: "location".to_owned(),
+                            profile_id: None,
+                            conversation_id: None,
+                            title: name.unwrap_or_else(|| "Saved Location".to_owned()),
+                            subtitle: gh,
+                            timestamp: Some(ts),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. albums
+    if items.len() < max_items && table_exists(&conn, "albums").unwrap_or(false) {
+        let sql = "SELECT album_id, album_name, conversation_id, created_at FROM albums WHERE album_name LIKE ?1 ORDER BY created_at DESC LIMIT ?2";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            let rem = (max_items - items.len()) as i64;
+            if let Ok(mut rows) = stmt.query(rusqlite::params![pattern, rem]) {
+                while let Ok(Some(r)) = rows.next() {
+                    if let (Ok(_aid), Ok(aname), Ok(cid), Ok(ts)) = (
+                        r.get::<_, String>(0),
+                        r.get::<_, Option<String>>(1),
+                        r.get::<_, Option<String>>(2),
+                        r.get::<_, i64>(3),
+                    ) {
+                        items.push(GlobalSearchResultItem {
+                            kind: "album".to_owned(),
+                            profile_id: None,
+                            conversation_id: cid,
+                            title: aname.unwrap_or_else(|| "Album".to_owned()),
+                            subtitle: None,
+                            timestamp: Some(ts),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(items)
 }
 
 fn get_cross_account_profile_provenance_in_dir(

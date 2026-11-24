@@ -11,6 +11,10 @@ const CHAT_INDEX_DB = "sqlite:chat_contact_index.sqlite3";
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 const SQLITE_LOCK_RETRY_DELAYS_MS = [30, 80, 180, 350] as const;
 
+function getActiveAccountScopeId(): string {
+	return window.localStorage.getItem("fg-user-id")?.trim() || "";
+}
+
 type ChatContactIndexRow = {
 	profile_id: string;
 	conversation_id: string | null;
@@ -47,19 +51,52 @@ async function getDb(): Promise<Database> {
 			await executeWithLockRetry(db, "init-tables", async () => {
 				await db.execute(`
 				CREATE TABLE IF NOT EXISTS chat_contact_index (
-					profile_id TEXT PRIMARY KEY,
+					account_id TEXT NOT NULL DEFAULT '',
+					profile_id TEXT NOT NULL,
 					conversation_id TEXT,
 					last_message_timestamp INTEGER,
 					unread_count INTEGER NOT NULL DEFAULT 0,
 					has_chatted INTEGER NOT NULL DEFAULT 0,
-					updated_at INTEGER NOT NULL
+					updated_at INTEGER NOT NULL,
+					PRIMARY KEY (account_id, profile_id)
 				)
 			`);
+
+				// Migrate table if account_id column is missing
+				try {
+					const tableInfo = await db.select<{ name: string }[]>("PRAGMA table_info(chat_contact_index)");
+					const hasAccountId = tableInfo.some((col) => col.name === "account_id");
+					if (!hasAccountId) {
+						appLog.info("[chat-index] migrating chat_contact_index to include account_id");
+						await db.execute(`
+							CREATE TABLE chat_contact_index_v2 (
+								account_id TEXT NOT NULL DEFAULT '',
+								profile_id TEXT NOT NULL,
+								conversation_id TEXT,
+								last_message_timestamp INTEGER,
+								unread_count INTEGER NOT NULL DEFAULT 0,
+								has_chatted INTEGER NOT NULL DEFAULT 0,
+								updated_at INTEGER NOT NULL,
+								PRIMARY KEY (account_id, profile_id)
+							)
+						`);
+						await db.execute(`
+							INSERT INTO chat_contact_index_v2 (account_id, profile_id, conversation_id, last_message_timestamp, unread_count, has_chatted, updated_at)
+							SELECT '', profile_id, conversation_id, last_message_timestamp, unread_count, has_chatted, updated_at
+							FROM chat_contact_index
+						`);
+						await db.execute("DROP TABLE chat_contact_index");
+						await db.execute("ALTER TABLE chat_contact_index_v2 RENAME TO chat_contact_index");
+					}
+				} catch (migrationError) {
+					appLog.error("[chat-index] failed to migrate chat_contact_index", migrationError);
+				}
+
 				await db.execute(
-					"CREATE INDEX IF NOT EXISTS idx_chat_contact_index_updated_at ON chat_contact_index(updated_at DESC)",
+					"CREATE INDEX IF NOT EXISTS idx_chat_contact_index_updated_at ON chat_contact_index(account_id, updated_at DESC)",
 				);
 				await db.execute(
-					"CREATE INDEX IF NOT EXISTS idx_chat_contact_index_last_message ON chat_contact_index(last_message_timestamp DESC)",
+					"CREATE INDEX IF NOT EXISTS idx_chat_contact_index_last_message ON chat_contact_index(account_id, last_message_timestamp DESC)",
 				);
 				await db.execute(`
 				CREATE TABLE IF NOT EXISTS chat_local_profile_meta (
@@ -150,6 +187,7 @@ export async function upsertChatContactIndexFromInbox(
 	}
 
 	const db = await getDb();
+	const accountId = getActiveAccountScopeId();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-from-inbox", async () => {
@@ -162,14 +200,15 @@ export async function upsertChatContactIndexFromInbox(
 			await db.execute(
 				`
 			INSERT INTO chat_contact_index (
+				account_id,
 				profile_id,
 				conversation_id,
 				last_message_timestamp,
 				unread_count,
 				has_chatted,
 				updated_at
-			) VALUES ($1, $2, $3, $4, 1, $5)
-			ON CONFLICT(profile_id) DO UPDATE SET
+			) VALUES ($1, $2, $3, $4, $5, 1, $6)
+			ON CONFLICT(account_id, profile_id) DO UPDATE SET
 				conversation_id = COALESCE(excluded.conversation_id, chat_contact_index.conversation_id),
 				last_message_timestamp = CASE
 					WHEN excluded.last_message_timestamp IS NULL THEN chat_contact_index.last_message_timestamp
@@ -182,6 +221,7 @@ export async function upsertChatContactIndexFromInbox(
 				updated_at = excluded.updated_at
 			`,
 				[
+					accountId,
 					profileId,
 					entry.conversationId,
 					entry.lastMessageTimestamp,
@@ -203,6 +243,7 @@ export async function upsertChatContactIndexFromGrid(
 	}
 
 	const db = await getDb();
+	const accountId = getActiveAccountScopeId();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "upsert-from-grid", async () => {
@@ -217,14 +258,15 @@ export async function upsertChatContactIndexFromGrid(
 			await db.execute(
 				`
 			INSERT INTO chat_contact_index (
+				account_id,
 				profile_id,
 				conversation_id,
 				last_message_timestamp,
 				unread_count,
 				has_chatted,
 				updated_at
-			) VALUES ($1, NULL, NULL, $2, CASE WHEN $2 > 0 THEN 1 ELSE 0 END, $3)
-			ON CONFLICT(profile_id) DO UPDATE SET
+			) VALUES ($1, $2, NULL, NULL, $3, CASE WHEN $3 > 0 THEN 1 ELSE 0 END, $4)
+			ON CONFLICT(account_id, profile_id) DO UPDATE SET
 				unread_count = CASE
 					WHEN excluded.unread_count > chat_contact_index.unread_count THEN excluded.unread_count
 					ELSE chat_contact_index.unread_count
@@ -236,7 +278,7 @@ export async function upsertChatContactIndexFromGrid(
 				END,
 				updated_at = excluded.updated_at
 			`,
-				[profileId, unreadCount, now],
+				[accountId, profileId, unreadCount, now],
 			);
 		}
 	});
@@ -250,12 +292,13 @@ export async function getChatContactIndexForProfiles(
 	}
 
 	const db = await getDb();
+	const accountId = getActiveAccountScopeId();
 	const ids = profileIds.map((id) => id.trim()).filter(Boolean);
 	if (ids.length === 0) {
 		return [];
 	}
 
-	const placeholders = ids.map((_, index) => `$${index + 1}`).join(", ");
+	const placeholders = ids.map((_, index) => `$${index + 2}`).join(", ");
 	const rows = await db.select<ChatContactIndexRow[]>(
 		`
 		SELECT
@@ -266,9 +309,9 @@ export async function getChatContactIndexForProfiles(
 			has_chatted,
 			updated_at
 		FROM chat_contact_index
-		WHERE profile_id IN (${placeholders})
+		WHERE account_id = $1 AND profile_id IN (${placeholders})
 		`,
-		ids,
+		[accountId, ...ids],
 	);
 
 	return rows.map((row) => ({
@@ -306,20 +349,22 @@ export async function incrementUnreadCountForProfile(
 	}
 
 	const db = await getDb();
+	const accountId = getActiveAccountScopeId();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "increment-unread", async () => {
 		await db.execute(
 			`
 			INSERT INTO chat_contact_index (
+				account_id,
 				profile_id,
 				conversation_id,
 				last_message_timestamp,
 				unread_count,
 				has_chatted,
 				updated_at
-			) VALUES ($1, $2, $3, 1, 1, $4)
-			ON CONFLICT(profile_id) DO UPDATE SET
+			) VALUES ($1, $2, $3, $4, 1, 1, $5)
+			ON CONFLICT(account_id, profile_id) DO UPDATE SET
 				conversation_id = COALESCE(excluded.conversation_id, chat_contact_index.conversation_id),
 				last_message_timestamp = CASE
 					WHEN excluded.last_message_timestamp > COALESCE(chat_contact_index.last_message_timestamp, 0)
@@ -330,7 +375,7 @@ export async function incrementUnreadCountForProfile(
 				has_chatted = 1,
 				updated_at = excluded.updated_at
 			`,
-			[normalizedProfileId, conversationId, lastMessageTimestamp, now],
+			[accountId, normalizedProfileId, conversationId, lastMessageTimestamp, now],
 		);
 	});
 }
@@ -347,16 +392,17 @@ export async function clearUnreadCountForProfile(
 	}
 
 	const db = await getDb();
+	const accountId = getActiveAccountScopeId();
 	const now = Date.now();
 
 	await executeWithLockRetry(db, "clear-unread", async () => {
 		await db.execute(
 			`
 			UPDATE chat_contact_index
-			SET unread_count = 0, updated_at = $2
-			WHERE profile_id = $1
+			SET unread_count = 0, updated_at = $3
+			WHERE account_id = $1 AND profile_id = $2
 			`,
-			[normalizedProfileId, now],
+			[accountId, normalizedProfileId, now],
 		);
 	});
 }

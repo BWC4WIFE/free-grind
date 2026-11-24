@@ -3,16 +3,78 @@
  * name (e.g. "Berlin, Germany") via Nominatim, the same free OSM-backed
  * service already used for forward search in LocationOverlay.tsx.
  *
- * Results are cached by geohash for the lifetime of the session — travel
- * plan geohashes are low-cardinality (the same handful of places tend to
- * recur) and Nominatim's usage policy expects clients to cache rather than
- * re-request the same lookup.
+ * Results are cached by `${geohash}:${lang}` in memory and localStorage, and
+ * outgoing Nominatim requests are serialized through a >= 1.1s rate-limited queue
+ * so concurrent mounts never trigger HTTP 429 bursts.
  */
 
+import i18n from "../../../i18n";
 import { decodeGeohash } from "../../../utils/geohash";
 import { appLog } from "../../../utils/logger";
 
-const cache = new Map<string, Promise<{ label: string | null; city: string | null; cityDistrictLabel: string | null }>>();
+type CachedGeocodeResult = {
+	label: string | null;
+	city: string | null;
+	cityDistrictLabel: string | null;
+};
+
+const PERSISTENT_CACHE_KEY = "fg-geocode-cache-v1";
+const MAX_PERSISTENT_ENTRIES = 200;
+const NOMINATIM_MIN_INTERVAL_MS = 1100;
+
+const cache = new Map<string, Promise<CachedGeocodeResult>>();
+let nominatimQueue: Promise<void> = Promise.resolve();
+let lastNominatimCallAt = 0;
+
+function getAcceptLanguage(): string {
+	return (i18n.language || "en").trim() || "en";
+}
+
+function loadPersistentCache(): Record<string, CachedGeocodeResult> {
+	if (typeof window === "undefined") return {};
+	try {
+		const raw = window.localStorage.getItem(PERSISTENT_CACHE_KEY);
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		return parsed && typeof parsed === "object" ? (parsed as Record<string, CachedGeocodeResult>) : {};
+	} catch {
+		return {};
+	}
+}
+
+function savePersistentCacheEntry(key: string, value: CachedGeocodeResult): void {
+	if (typeof window === "undefined") return;
+	if (!value.label && !value.city && !value.cityDistrictLabel) return;
+	try {
+		const current = loadPersistentCache();
+		current[key] = value;
+		const keys = Object.keys(current);
+		if (keys.length > MAX_PERSISTENT_ENTRIES) {
+			for (const oldKey of keys.slice(0, keys.length - MAX_PERSISTENT_ENTRIES)) {
+				delete current[oldKey];
+			}
+		}
+		window.localStorage.setItem(PERSISTENT_CACHE_KEY, JSON.stringify(current));
+	} catch {
+		// Ignore storage quota errors
+	}
+}
+
+function enqueueNominatim<T>(task: () => Promise<T>): Promise<T> {
+	const run = nominatimQueue.then(async () => {
+		const elapsed = Date.now() - lastNominatimCallAt;
+		if (elapsed < NOMINATIM_MIN_INTERVAL_MS) {
+			await new Promise((r) => setTimeout(r, NOMINATIM_MIN_INTERVAL_MS - elapsed));
+		}
+		lastNominatimCallAt = Date.now();
+		return task();
+	});
+	nominatimQueue = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run;
+}
 
 export type NominatimAddress = {
 	road?: string;
@@ -39,13 +101,6 @@ export function getCityFromAddress(address: NominatimAddress): string | null {
 	return address.city ?? address.town ?? address.village ?? address.municipality ?? null;
 }
 
-/**
- * "Street Housenumber, City, District" — street+number leads (most specific,
- * and the two read naturally together), then city, then district last.
- * Reads better than Nominatim's own display_name order (housenumber,
- * street, district, city). Shared between reverse geocoding and forward
- * search results so both render addresses identically.
- */
 export function formatNominatimAddress(address: NominatimAddress, fallback: string | null): string | null {
 	const street = address.road
 		? (address.house_number ? `${address.road} ${address.house_number}` : address.road)
@@ -62,10 +117,6 @@ export function formatNominatimAddress(address: NominatimAddress, fallback: stri
 	return address.country ?? fallback;
 }
 
-/**
- * "City, District" — no street or house number. Used for travel plan
- * display, where building-level precision isn't relevant.
- */
 export function formatCityDistrictAddress(address: NominatimAddress, fallback: string | null): string | null {
 	const cityName = getCityFromAddress(address);
 	const district = address.neighbourhood ?? address.suburb ?? address.borough ?? address.city_district ?? null;
@@ -82,39 +133,49 @@ export function formatCityDistrictAddress(address: NominatimAddress, fallback: s
 async function fetchReverseGeocode(
 	lat: number,
 	lon: number,
-): Promise<{ label: string | null; city: string | null; cityDistrictLabel: string | null }> {
-	try {
-		// zoom=18 (building/street level) — anything coarser collapses picks
-		// that are a few streets apart into the same neighbourhood/suburb
-		// result, since those fields don't change within a whole district.
-		// Only the `road` field changes street-to-street, so resolving that
-		// fine is the only way to reflect small map moves.
-		const response = await fetch(
-			`https://nominatim.openstreetmap.org/reverse?format=json&zoom=18&lat=${lat}&lon=${lon}`,
-			{ headers: { "User-Agent": "Mozilla/5.0 (compatible)" } },
-		);
-		if (!response.ok) {
+	acceptLanguage: string,
+): Promise<CachedGeocodeResult> {
+	return enqueueNominatim(async () => {
+		try {
+			const response = await fetch(
+				`https://nominatim.openstreetmap.org/reverse?format=json&zoom=18&lat=${lat}&lon=${lon}&accept-language=${encodeURIComponent(acceptLanguage)}`,
+			);
+			if (!response.ok) {
+				return { label: null, city: null, cityDistrictLabel: null };
+			}
+			const data = (await response.json()) as NominatimReverseResponse;
+			if (!data.address) {
+				return {
+					label: data.display_name ?? null,
+					city: null,
+					cityDistrictLabel: data.display_name ?? null,
+				};
+			}
+			return {
+				label: formatNominatimAddress(data.address, data.display_name ?? null),
+				city: getCityFromAddress(data.address),
+				cityDistrictLabel: formatCityDistrictAddress(data.address, data.display_name ?? null),
+			};
+		} catch (error) {
+			appLog.warn("[geocoding] reverse lookup failed", error);
 			return { label: null, city: null, cityDistrictLabel: null };
 		}
-		const data = (await response.json()) as NominatimReverseResponse;
-		if (!data.address) {
-			return { label: data.display_name ?? null, city: null, cityDistrictLabel: data.display_name ?? null };
-		}
-		return {
-			label: formatNominatimAddress(data.address, data.display_name ?? null),
-			city: getCityFromAddress(data.address),
-			cityDistrictLabel: formatCityDistrictAddress(data.address, data.display_name ?? null),
-		};
-	} catch (error) {
-		appLog.warn("[geocoding] reverse lookup failed", error);
-		return { label: null, city: null, cityDistrictLabel: null };
-	}
+	});
 }
 
-function resolveGeohash(geohash: string): Promise<{ label: string | null; city: string | null; cityDistrictLabel: string | null }> {
-	const cached = cache.get(geohash);
+function resolveGeohash(geohash: string): Promise<CachedGeocodeResult> {
+	const lang = getAcceptLanguage();
+	const cacheKey = `${geohash}:${lang}`;
+	const cached = cache.get(cacheKey);
 	if (cached) {
 		return cached;
+	}
+
+	const persistent = loadPersistentCache()[cacheKey];
+	if (persistent) {
+		const hit = Promise.resolve(persistent);
+		cache.set(cacheKey, hit);
+		return hit;
 	}
 
 	const run = (async () => {
@@ -122,30 +183,29 @@ function resolveGeohash(geohash: string): Promise<{ label: string | null; city: 
 			const decoded = decodeGeohash(geohash);
 			const lat = (decoded.lat[0] + decoded.lat[1]) / 2;
 			const lon = (decoded.lon[0] + decoded.lon[1]) / 2;
-			return await fetchReverseGeocode(lat, lon);
+			const result = await fetchReverseGeocode(lat, lon, lang);
+			savePersistentCacheEntry(cacheKey, result);
+			return result;
 		} catch (error) {
 			appLog.warn(`[geocoding] failed to decode geohash ${geohash}`, error);
 			return { label: null, city: null, cityDistrictLabel: null };
 		}
 	})();
 
-	cache.set(geohash, run);
+	cache.set(cacheKey, run);
 	return run;
 }
 
-/** Resolves a geohash to a "City, Country"-style label, or null if it can't be resolved. Cached per geohash for the session. */
 export async function reverseGeocodeGeohash(geohash: string): Promise<string | null> {
 	const { label } = await resolveGeohash(geohash);
 	return label;
 }
 
-/** Resolves a geohash to just its city name, or null if it can't be resolved. Shares the reverse-geocode cache, so this is free if the label was already resolved for the same geohash. */
 export async function reverseGeocodeCityForGeohash(geohash: string): Promise<string | null> {
 	const { city } = await resolveGeohash(geohash);
 	return city;
 }
 
-/** Resolves a geohash to a "City, District"-style label (no street/house number), or null if it can't be resolved. Shares the reverse-geocode cache. */
 export async function reverseGeocodeCityDistrictForGeohash(geohash: string): Promise<string | null> {
 	const { cityDistrictLabel } = await resolveGeohash(geohash);
 	return cityDistrictLabel;

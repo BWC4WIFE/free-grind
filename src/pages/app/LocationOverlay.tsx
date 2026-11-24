@@ -347,9 +347,10 @@ export function LocationOverlay({ onClose, exploreLocation, onSetExploreLocation
 		setLastSearchedQuery(query);
 		setIsSearchingLocation(true);
 		try {
+			const lang = encodeURIComponent((i18n.language || "en").trim() || "en");
 			const res = await fetch(
-				`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&q=${encodeURIComponent(query)}`,
-				{ signal, headers: { "User-Agent": "Mozilla/5.0 (compatible)" } },
+				`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&accept-language=${lang}&q=${encodeURIComponent(query)}`,
+				{ signal },
 			);
 			if (!res.ok) throw new Error("search failed");
 			setLocationResults(z.array(geocodeResultSchema).parse(await res.json()));
@@ -530,13 +531,6 @@ export function LocationOverlay({ onClose, exploreLocation, onSetExploreLocation
 								type="button"
 								onClick={() => {
 									setActiveTab("set");
-									// Leaving the explore tab ends explore right away, not just
-									// once a new real location is confirmed — otherwise the grid
-									// would keep showing the explored area while this tab implies
-									// you're back to your real location.
-									if (exploreLocation) {
-										onSetExploreLocation(null);
-									}
 								}}
 								className={`flex flex-1 items-center justify-center gap-1.5 rounded-[10px] py-2 text-sm font-medium transition-all duration-200 active:scale-[0.97] ${
 									!isExploreTab

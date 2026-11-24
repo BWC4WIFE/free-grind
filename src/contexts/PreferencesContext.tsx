@@ -457,9 +457,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 			}
 			dispatch({ type: "SET_GEOHASH", payload: stored?.geohash ?? null });
 			dispatch({ type: "SET_LOCATION_NAME", payload: stored?.locationName ?? null });
-			// Force useAutoLocation off so background GPS refreshes cannot overwrite
-			// an account's pinned location on launch or account switch.
-			dispatch({ type: "SET_AUTO_LOCATION", payload: false });
+			dispatch({ type: "SET_AUTO_LOCATION", payload: Boolean(stored?.useAutoLocation) });
 			setLoadedLocationUserId(targetUserId);
 		})();
 		return () => {
@@ -627,7 +625,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 					await setSetting(LOCATION_SETTINGS_KEY, {
 						geohash: preferences.geohash,
 						locationName: preferences.locationName ?? null,
-						useAutoLocation: false,
+						useAutoLocation: preferences.useAutoLocation,
 					} satisfies StoredLocationPrefs);
 				}
 			}
@@ -678,7 +676,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 		developerMode: state.developerMode,
 		showDebugInfo: state.showDebugInfo,
 		testReminderDisabled: state.testReminderDisabled,
-		useAutoLocation: false,
+		useAutoLocation: state.useAutoLocation,
 		rightNowTestMode: state.rightNowTestMode,
 		activeRightNowId: state.activeRightNowId,
 		activeRightNowExpiresAt: state.activeRightNowExpiresAt,

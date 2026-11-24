@@ -37,6 +37,19 @@ export type BackupInspection =
 
 export type ImportBackupResult = { ok: true; rowsImported: number } | { ok: false; error: "wrong_owner" | "invalid_format" };
 
+export interface GlobalSearchResultItem {
+	kind: "profile" | "conversation" | "message" | "note" | "location" | "album";
+	profileId?: string | null;
+	conversationId?: string | null;
+	title: string;
+	subtitle?: string | null;
+	timestamp?: number | null;
+}
+
+export async function globalSearchMaster(query: string, limit = 30): Promise<GlobalSearchResultItem[]> {
+	return invoke<GlobalSearchResultItem[]>("global_search_master", { query, limit });
+}
+
 export interface PolledTableInfo {
 	name: string;
 	category?: BackupCategoryId | string | null;

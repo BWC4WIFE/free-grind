@@ -306,9 +306,44 @@ export function GridPage() {
 		if (isFetchingNotes || hasAttemptedFetchNotes) return;
 		setIsFetchingNotes(true);
 		try {
-			const notes = await apiFunctions.getFavoriteNotes();
-			appLog.info("Fetched favorite notes:", notes);
-			setFavoriteNotes(notes);
+			const [serverNotes, localNotes] = await Promise.all([
+				apiFunctions.getFavoriteNotes().catch(() => []),
+				chatDb.listMergedFavoriteNotesLocal().catch(() => []),
+			]);
+			for (const n of serverNotes) {
+				if (n.notes || n.phoneNumber) {
+					void chatDb
+						.upsertFavoriteNoteLocal(String(n.counterpartyId), n.notes ?? "", n.phoneNumber ?? "", { merge: true })
+						.catch(() => undefined);
+				}
+			}
+			const mergedById = new Map<string, { notes: string; phoneNumber: string; counterpartyId: string }>();
+			for (const entry of [...localNotes, ...serverNotes]) {
+				const pid = String(entry.counterpartyId);
+				const prev = mergedById.get(pid);
+				if (!prev) {
+					mergedById.set(pid, {
+						counterpartyId: pid,
+						notes: entry.notes ?? "",
+						phoneNumber: entry.phoneNumber ?? "",
+					});
+				} else {
+					const noteParts = Array.from(
+						new Set([...prev.notes.split("\n---\n"), ...(entry.notes ?? "").split("\n---\n")].map((s) => s.trim()).filter(Boolean)),
+					);
+					const phoneParts = Array.from(
+						new Set([...prev.phoneNumber.split(" / "), ...(entry.phoneNumber ?? "").split(" / ")].map((s) => s.trim()).filter(Boolean)),
+					);
+					mergedById.set(pid, {
+						counterpartyId: pid,
+						notes: noteParts.join("\n---\n"),
+						phoneNumber: phoneParts.join(" / "),
+					});
+				}
+			}
+			const mergedList = Array.from(mergedById.values());
+			appLog.info("Fetched favorite notes:", mergedList.length);
+			setFavoriteNotes(mergedList);
 			setHasAttemptedFetchNotes(true);
 		} catch (error) {
 			appLog.error("Failed to fetch favorite notes:", error);

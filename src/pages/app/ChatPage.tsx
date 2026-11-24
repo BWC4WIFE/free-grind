@@ -1544,6 +1544,83 @@ export function ChatPage() {
 							}
 							return { ...c.entry, data: { ...c.entry.data, unreadCount: 0 } };
 						});
+				} else if (filters.onlineNowOnly && replace) {
+					// When Online filter is active, also include merged master.sqlite3
+					// conversations whose partner is currently online via POST /v3/profiles.
+					try {
+						const masterEntries = await chatDb.listMasterConversations(250);
+						const existingConvIds = new Set(
+							response.entries.map((e) => e.data.conversationId),
+						);
+						const existingPartners = new Set(
+							response.entries
+								.map((e) => getOtherParticipant(e, userId)?.profileId)
+								.filter((id): id is number => typeof id === "number"),
+						);
+						const candidates = masterEntries.filter((entry) => {
+							if (existingConvIds.has(entry.data.conversationId)) return false;
+							const other = getOtherParticipant(entry, userId);
+							return other?.profileId != null && !existingPartners.has(other.profileId);
+						});
+						const partnerIds = Array.from(
+							new Set(
+								candidates
+									.map((e) => getOtherParticipant(e, userId)?.profileId)
+									.filter((id): id is number => typeof id === "number")
+									.map(String),
+							),
+						).slice(0, 150);
+						if (partnerIds.length > 0) {
+							const nowMs = Date.now();
+							const liveStatusById = new Map<string, { onlineUntil: number | null; distance: number | null }>();
+							const chunks: string[][] = [];
+							for (let i = 0; i < partnerIds.length; i += 50) {
+								chunks.push(partnerIds.slice(i, i + 50));
+							}
+							const batchResults = await Promise.all(
+								chunks.map((chunk) => apiFunctions.getProfilesByIds(chunk).catch(() => [])),
+							);
+							for (const rawProfile of batchResults.flat()) {
+								if (!rawProfile || typeof rawProfile !== "object") continue;
+								const rec = rawProfile as Record<string, unknown>;
+								const pid = rec.profileId != null ? String(rec.profileId) : "";
+								if (!pid) continue;
+								liveStatusById.set(pid, {
+									onlineUntil: typeof rec.onlineUntil === "number" ? rec.onlineUntil : null,
+									distance: typeof rec.distance === "number" ? rec.distance : null,
+								});
+							}
+							recoveredEntries = candidates
+								.filter((entry) => {
+									const otherId = getOtherParticipant(entry, userId)?.profileId;
+									if (otherId == null) return false;
+									const live = liveStatusById.get(String(otherId));
+									return typeof live?.onlineUntil === "number" && live.onlineUntil > nowMs;
+								})
+								.map((entry) => {
+									const otherId = getOtherParticipant(entry, userId)?.profileId;
+									const live = otherId != null ? liveStatusById.get(String(otherId)) : undefined;
+									return {
+										...entry,
+										data: {
+											...entry.data,
+											unreadCount: 0,
+											participants: entry.data.participants.map((p) =>
+												p.profileId === otherId && live
+													? {
+															...p,
+															onlineUntil: live.onlineUntil ?? p.onlineUntil,
+															distanceMetres: live.distance ?? p.distanceMetres,
+														}
+													: p,
+											),
+										},
+									};
+								});
+						}
+					} catch (error) {
+						appLog.warn("[ChatPage] failed to hydrate master online conversations", error);
+					}
 				}
 
 				setConversations((previous) => {
@@ -1576,28 +1653,15 @@ export function ChatPage() {
 						// there's nothing to preserve here — a plain replace is correct.
 
 						let combined = entriesWithUnreadFixed;
-						if (!hasActiveServerFilters) {
-							// Union in whatever was already paged into view but that this
-							// response didn't include (e.g. one unarchived elsewhere while
-							// this page wasn't mounted, or — for a block-related archive —
-							// one the server will *never* list again on its own, since it
-							// only relists a conversation once someone messages that
-							// profile afresh) so the list never loses something it was
-							// already showing. Sourced from `previous` (this update's own
-							// guaranteed-current state), not a ref snapshotted earlier in
-							// this async function: two overlapping loadInbox calls (e.g. a
-							// poll and a send-triggered refresh elsewhere) each reach this
-							// updater at their own pace, and only `previous` is guaranteed
-							// to already reflect whatever the other one just committed —
-							// a ref read earlier in either call's timeline could still be
-							// the pre-union snapshot, silently dropping the recovered entry
-							// the moment the other call's "replace" wins the race.
+						if (!hasActiveServerFilters || recoveredEntries.length > 0) {
 							const responseIds = new Set(
 								entriesWithUnreadFixed.map((entry) => entry.data.conversationId),
 							);
-							const missingFromPrevious = previous.filter(
-								(entry) => !responseIds.has(entry.data.conversationId),
-							);
+							const missingFromPrevious = !hasActiveServerFilters
+								? previous.filter(
+										(entry) => !responseIds.has(entry.data.conversationId),
+								  )
+								: [];
 							const missingIds = new Set(
 								missingFromPrevious.map((entry) => entry.data.conversationId),
 							);

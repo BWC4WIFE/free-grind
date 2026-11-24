@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useEffectiveColorScheme } from "../../../../hooks/useEffectiveColorScheme";
 import type { SelectedLocation } from "../../GridPage.types";
-import { applyDarkMapTheme, createPinMarkerElement, getMapStyleUrl, relaxRoadZoomThresholds } from "./mapStyles";
+import { applyDarkMapTheme, createPinMarkerElement, getMapStyleUrl, localizeMapLabels, relaxRoadZoomThresholds } from "./mapStyles";
 
 type MapLocationPickerProps = {
 	selectedLocation: Pick<SelectedLocation, "lat" | "lon"> | null;
@@ -37,6 +37,9 @@ export function MapLocationPicker({
 	const maplibreRef = useRef<any>(null);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const scheme = useEffectiveColorScheme();
+	const { i18n } = useTranslation();
+	const languageRef = useRef(i18n.language);
+	languageRef.current = i18n.language;
 
 	// Kept current via refs so the map-init effect below can stay mount-only
 	// instead of tearing down and recreating the whole map on every parent re-render.
@@ -121,6 +124,7 @@ export function MapLocationPicker({
 				map.on("click", (event: any) => { onPickRef.current(event.lngLat.lat, event.lngLat.lng); });
 				map.on("style.load", () => {
 					relaxRoadZoomThresholds(map);
+					localizeMapLabels(map, languageRef.current);
 					if (schemeRef.current === "dark") applyDarkMapTheme(map);
 				});
 				// Extra safety net beyond waitForPaint above: re-measure once the
@@ -177,6 +181,12 @@ export function MapLocationPicker({
 
 	useEffect(() => {
 		const map = mapRef.current;
+		if (!map || !map.isStyleLoaded?.()) return;
+		localizeMapLabels(map, i18n.language);
+	}, [i18n.language]);
+
+	useEffect(() => {
+		const map = mapRef.current;
 		const maplibregl = maplibreRef.current;
 		if (!map || !maplibregl || !selectedLocation) return;
 
@@ -190,7 +200,8 @@ export function MapLocationPicker({
 			.setLngLat(lngLat)
 			.addTo(map);
 
-		map.jumpTo({ center: lngLat, zoom: Math.max(defaultZoom, map.getZoom()) });
+		const currentZoom = typeof map.getZoom === "function" ? map.getZoom() : defaultZoom;
+		map.jumpTo({ center: lngLat, zoom: currentZoom <= 3 ? defaultZoom : currentZoom });
 		map.resize();
 	}, [defaultZoom, selectedLocation, pinColor]);
 

@@ -188,6 +188,7 @@ pub fn run() {
                 commands::backup::preview_table_rows,
                 commands::backup::sync_master_database,
                 commands::backup::list_account_locations,
+                commands::backup::global_search_master,
                 commands::backup::get_cross_account_profile_provenance,
                 commands::backup::read_account_conversation_messages,
             ])
@@ -283,6 +284,7 @@ pub fn run() {
                 commands::backup::preview_table_rows,
                 commands::backup::sync_master_database,
                 commands::backup::list_account_locations,
+                commands::backup::global_search_master,
                 commands::backup::get_cross_account_profile_provenance,
                 commands::backup::read_account_conversation_messages,
             ])
