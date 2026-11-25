@@ -34,6 +34,12 @@ const PRIVACY_SETTINGS_KEY = "privacy";
 
 let privacyCache: PrivacySettings = DEFAULT_PRIVACY_SETTINGS;
 
+export function resetPrivacyCache(): void {
+    privacyCache = DEFAULT_PRIVACY_SETTINGS;
+    notifyReadReceiptsChanged();
+    notifyIncognitoChanged();
+}
+
 export async function loadPrivacyCache(): Promise<void> {
     try {
         const stored = await getSetting<Partial<PrivacySettings>>(PRIVACY_SETTINGS_KEY);

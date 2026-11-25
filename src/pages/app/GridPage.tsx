@@ -52,6 +52,7 @@ import {
 import type { ChatContactIndexRecord } from "../../types/chat-contact-index";
 import { appLog } from "../../utils/logger";
 import { setIncognitoMode, useIncognitoMode } from "../../utils/privacy";
+import { useHorizontalWheelScroll } from "../../utils/horizontalWheelScroll";
 import { setGridPageActive } from "./gridpage/activeState";
 import { GRID_REFRESH_INTERVAL_MS } from "../../components/gridRefreshInterval";
 import { ConfirmDialog } from "../../components/ui/confirm-dialog";
@@ -305,6 +306,17 @@ export function GridPage() {
 	const [isTogglingDistance, setIsTogglingDistance] = useState(false);
 
 	const isDesktop = useDesktopBreakpoint();
+	const filterBarScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
+	const previousGridUserIdRef = useRef<number | null>(userId);
+	useEffect(() => {
+		if (previousGridUserIdRef.current !== userId) {
+			previousGridUserIdRef.current = userId;
+			setCards([]);
+			setNextPage(null);
+			setDeepSweepAddedCount(null);
+			setIsLoadingCards(true);
+		}
+	}, [userId]);
 
 	const handleFetchNotes = useCallback(async () => {
 		if (isFetchingNotes || hasAttemptedFetchNotes) return;
@@ -1639,7 +1651,7 @@ export function GridPage() {
 	const [isTogglingIncognito, setIsTogglingIncognito] = useState(false);
 
 	const handleToggleIncognito = useCallback(async () => {
-		if (isTogglingIncognito) return;
+		if (isTogglingIncognito || !settingsReady) return;
 		const next = !isIncognitoActive;
 		setIsTogglingIncognito(true);
 		try {
@@ -1656,7 +1668,7 @@ export function GridPage() {
 		} finally {
 			setIsTogglingIncognito(false);
 		}
-	}, [apiFunctions, geohash, isIncognitoActive, isTogglingIncognito, loadBrowseCards, t]);
+	}, [apiFunctions, geohash, isIncognitoActive, isTogglingIncognito, loadBrowseCards, settingsReady, t]);
 
 	return (
 		<>
@@ -1957,8 +1969,24 @@ export function GridPage() {
 								</div>
 							</div>
 
-							<div className="-mx-[var(--app-px)] overflow-x-auto pb-1 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-								<div className="flex min-w-max items-center gap-2 px-[var(--app-px)] ml-auto">
+							<div
+								ref={filterBarScrollRef}
+								data-lenis-prevent
+								className={cn(
+									"pb-1 pt-2",
+									isDesktop
+										? "overflow-visible"
+										: "-mx-[var(--app-px)] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+								)}
+							>
+								<div
+									className={cn(
+										"flex items-center gap-2",
+										isDesktop
+											? "flex-wrap justify-end"
+											: "min-w-max px-[var(--app-px)] ml-auto",
+									)}
+								>
 									<button
 										type="button"
 										onClick={() => setIsFiltersOpen(true)}

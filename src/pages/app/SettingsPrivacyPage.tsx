@@ -27,13 +27,13 @@ import {
 } from "../../utils/appDisguise";
 import {
 	getHideReadReceiptsGlobal,
-	getIncognitoMode,
 	getShowReadReceiptToggle,
 	isRecordProfileViewsEnabled,
 	setHideReadReceiptsGlobal,
 	setIncognitoMode,
 	setRecordProfileViewsEnabled,
 	setShowReadReceiptToggle as persistShowReadReceiptToggle,
+	useIncognitoMode,
 } from "../../utils/privacy";
 import {
 	readAnalyticsConsentChoice,
@@ -58,7 +58,7 @@ export function SettingsPrivacyPage() {
 	const [showReadReceiptToggle, setShowReadReceiptToggle] = useState(() => getShowReadReceiptToggle());
 	const [recordProfileViews, setRecordProfileViews] = useState(() => isRecordProfileViewsEnabled());
 	const [analyticsConsent, setAnalyticsConsent] = useState<AnalyticsConsentChoice | null>(() => readAnalyticsConsentChoice());
-	const [incognitoMode, setIncognitoModeState] = useState(() => getIncognitoMode());
+	const incognitoMode = useIncognitoMode();
 	const [isSyncingIncognito, setIsSyncingIncognito] = useState(false);
 	const [disguiseSupported] = useState(() => isAppDisguiseSupported());
 	const [disguise, setDisguiseState] = useState<AppDisguiseId>(() => getCurrentAppDisguise());
@@ -95,7 +95,6 @@ export function SettingsPrivacyPage() {
 							checked={incognitoMode}
 							onChange={(checked) => {
 								if (isSyncingIncognito) return;
-								setIncognitoModeState(checked);
 								setIsSyncingIncognito(true);
 								void (async () => {
 									try {

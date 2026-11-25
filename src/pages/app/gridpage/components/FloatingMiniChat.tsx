@@ -9,6 +9,7 @@ import {
 import type { FormattedAccountLabel } from "../../../../utils/accountLabels";
 import { formatRelativeTime } from "../../../../utils/relativeTime";
 import { cn } from "../../../../utils/cn";
+import { useHorizontalWheelScroll } from "../../../../utils/horizontalWheelScroll";
 
 interface FloatingMiniChatProps {
 	isOpen: boolean;
@@ -42,6 +43,7 @@ export function FloatingMiniChat({
 	onSendQuickMessage,
 }: FloatingMiniChatProps) {
 	const activeIdStr = activeUserId != null ? String(activeUserId) : null;
+	const accountTabsScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
 
 	// Build ordered tab list: conversation accounts first, then any favorite-only accounts, plus active account.
 	const accountTabs = useMemo(() => {
@@ -243,7 +245,11 @@ export function FloatingMiniChat({
 
 			{/* Account Switcher Tabs (shows Favorite / Chat accounts for this profile) */}
 			{accountTabs.length > 0 && (
-				<div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5">
+				<div
+					ref={accountTabsScrollRef}
+					data-lenis-prevent
+					className="flex items-center gap-1 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5"
+				>
 					{accountTabs.map((tab) => {
 						const meta = accountMetaMap[tab.accountId];
 						const selected = tab.accountId === currentTabAccountId;

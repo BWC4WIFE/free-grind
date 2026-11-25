@@ -7,6 +7,7 @@ import { PageHeaderBackground } from "../../../components/ui/PageHeaderBackgroun
 import { FilterPill } from "../../../components/ui/FilterPill";
 import { buildChatFiltersDraft, type ChatFiltersDraft } from "./chatUtils";
 import { cn } from "../../../utils/cn";
+import { useHorizontalWheelScroll } from "../../../utils/horizontalWheelScroll";
 import type { InboxFilters } from "../../../types/messages";
 import type { InboxVisibilityFilter } from "../../../types/chat-page";
 import { useInboxSyncStatus } from "../../../hooks/useInboxSyncStatus";
@@ -97,6 +98,7 @@ export function ChatInboxHeader({
 }: ChatInboxHeaderProps) {
 	const { t } = useTranslation();
 	const navigate = useNavigate();
+	const filterBarScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
 
 	return (
 		<header className="relative z-20 shrink-0 pointer-events-none">
@@ -161,8 +163,22 @@ export function ChatInboxHeader({
 
 					{/* Row 2: filter pills */}
 					{!isSearchOpen && (
-						<div className="-mx-[var(--app-px)] overflow-x-auto pb-4 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-							<div className="flex min-w-max items-center gap-2 px-[var(--app-px)]">
+						<div
+							ref={filterBarScrollRef}
+							data-lenis-prevent
+							className={cn(
+								"pb-4 pt-1",
+								isDesktop
+									? "overflow-visible"
+									: "-mx-[var(--app-px)] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+							)}
+						>
+							<div
+								className={cn(
+									"flex items-center gap-2",
+									isDesktop ? "flex-wrap" : "min-w-max px-[var(--app-px)]",
+								)}
+							>
 								<button
 									type="button"
 									onClick={() => {

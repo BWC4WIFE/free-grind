@@ -53,6 +53,7 @@ import { TapSelector } from "./TapSelector";
 import type { ChatContactIndexRecord } from "../../../../types/chat-contact-index";
 import { formatRelativeTime } from "../../../../utils/relativeTime";
 import { usePreferences } from "../../../../contexts/PreferencesContext";
+import { useHorizontalWheelScroll } from "../../../../utils/horizontalWheelScroll";
 import { formatTravelDateRange } from "../utils";
 import { decodeGeohash } from "../../../../utils/geohash";
 import { appLog } from "../../../../utils/logger";
@@ -225,6 +226,7 @@ export function ProfileDetailsContent({
 	isChatLinkedProfile = false,
 }: ProfileDetailsContentProps) {
 	const { t } = useTranslation();
+	const photoHistoryScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
 	// Only chat partners get their photos locally cached (see avatarStore.ts) —
 	// ordinary Grid/Browse viewing stays uncached to avoid storing every photo
 	// of every profile a user swipes past.
@@ -1018,7 +1020,11 @@ export function ProfileDetailsContent({
 							count: photoHistory.length,
 						})}
 					</p>
-					<div className="flex gap-2.5 overflow-x-auto pb-1">
+					<div
+						ref={photoHistoryScrollRef}
+						data-lenis-prevent
+						className="flex gap-2.5 overflow-x-auto pb-1"
+					>
 						{photoHistory.map((entry, idx) => {
 							const fallbackThumb = getThumbImageUrl(entry.imageHash, "320x320");
 							const src =

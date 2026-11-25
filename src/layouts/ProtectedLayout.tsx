@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation } from "react-router-dom";
 import { NavBar } from "../components/NavBar";
-import { useDesktopBreakpoint } from "../hooks/useDesktopBreakpoint";
+import { useCanFitDualPane } from "../hooks/useDesktopBreakpoint";
 import { useAuth } from "../contexts/useAuth";
 import { useApiFunctions } from "../hooks/useApiFunctions";
 import { startViewerChaser } from "../services/viewerChaser";
@@ -56,7 +56,7 @@ export function ProtectedLayout() {
 	// can disagree (e.g. a mouse-driven window narrower than some arbitrary
 	// width threshold) and this hides the navbar for a route ChatPage itself
 	// never even considers "mobile fullscreen".
-	const isChatDualPane = useDesktopBreakpoint();
+	const isChatDualPane = useCanFitDualPane();
 
 	// Hide navbar on mobile/tablet for full-screen chat or profile pages.
 	const shouldHideNavbar = (isChatConversationRoute || isProfileRoute) && !isChatDualPane;

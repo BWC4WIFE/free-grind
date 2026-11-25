@@ -130,11 +130,11 @@ export function BrowseGrid({
 	}, []);
 
 	const gridTemplateColumns = isDesktop
-		? "repeat(6, minmax(0, 1fr))"
+		? "repeat(auto-fill, minmax(clamp(138px, 12.5vw, 210px), 1fr))"
 		: mobileGridColumns === "2"
 			? "repeat(auto-fill,  minmax(clamp(33.4%, 15vw, 250px), 1fr))"
 			: "repeat(auto-fill,  minmax(clamp(25.1%, 15vw, 250px), 1fr))";
-	const gridClassName = cn("grid w-full", isDesktop ? "gap-2 px-[var(--app-px)]" : "gap-px");
+	const gridClassName = cn("grid w-full", isDesktop ? "gap-1.5 sm:gap-2 px-[var(--app-px)]" : "gap-px");
 
 	// Column count and row height (tiles are always square, see BrowseCardTile)
 	// aren't knowable from JS in advance — the mobile template uses

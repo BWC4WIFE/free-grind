@@ -13,6 +13,8 @@ import { SexualHealthPrepSettingsSheet } from "./SexualHealthPrepSettingsSheet";
 import { loadPrepDoses } from "../../../services/prepDoses";
 import { computeProtectionStatus } from "../../../services/prepTracking";
 import { usePrepScheme } from "./usePrepScheme";
+import { useDesktopBreakpoint } from "../../../hooks/useDesktopBreakpoint";
+import { useHorizontalWheelScroll } from "../../../utils/horizontalWheelScroll";
 
 type SexualHealthTab = "doses" | "history" | "appointments" | "tests";
 
@@ -24,6 +26,8 @@ export function SexualHealthPage() {
 	// quick link — the back button should return wherever you actually came
 	// from instead of always landing on Settings.
 	const cameFromInbox = (location.state as { from?: string } | null)?.from === "inbox";
+	const isDesktop = useDesktopBreakpoint();
+	const tabsScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
 	const [activeTab, setActiveTab] = useState<SexualHealthTab>("history");
 	// Each list tab portals its own action row (status card, filters) into
 	// this slot so those controls stay pinned in the header instead of
@@ -103,8 +107,22 @@ export function SexualHealthPage() {
 
 					<div ref={setHeaderSlotEl} className="min-w-0 -mt-2.5 empty:hidden" />
 
-					<div className="-mx-[var(--app-px)] overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-						<div className="flex min-w-max items-center gap-2 px-[var(--app-px)]">
+					<div
+						ref={tabsScrollRef}
+						data-lenis-prevent
+						className={
+							isDesktop
+								? "pb-1"
+								: "-mx-[var(--app-px)] overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+						}
+					>
+						<div
+							className={
+								isDesktop
+									? "flex flex-wrap items-center gap-2"
+									: "flex min-w-max items-center gap-2 px-[var(--app-px)]"
+							}
+						>
 							{tabs.map((tab) => (
 								<FilterPill
 									key={tab.value}

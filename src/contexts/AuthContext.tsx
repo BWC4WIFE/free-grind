@@ -23,7 +23,7 @@ import { setActiveInterestStoreUser } from "../services/interestViewsStore";
 import { clearAllCaches } from "../pages/app/gridpage/cache";
 import { loadAutomationCache } from "../utils/autoblock";
 import { loadAutomationRulesCache } from "../utils/automationRules";
-import { loadPrivacyCache } from "../utils/privacy";
+import { loadPrivacyCache, resetPrivacyCache } from "../utils/privacy";
 import { loadSeenCache } from "../services/seenStore";
 import { runInboxSync } from "../services/inboxSync";
 import { runTapsAutomationSync } from "../services/tapsSync";
@@ -370,6 +370,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 			clearAllCaches();
 			queryClient.clear();
 		}
+		resetPrivacyCache();
 
 		dispatch({ type: "SET_SETTINGS_READY", payload: false });
 		setActiveInterestStoreUser(state.userId);

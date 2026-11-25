@@ -53,6 +53,7 @@ import "react-image-crop/dist/ReactCrop.css";
 import type { NavigateFunction } from "react-router-dom";
 import toast from "react-hot-toast";
 import { appLog } from "../../../utils/logger";
+import { useHorizontalWheelScroll } from "../../../utils/horizontalWheelScroll";
 import { isAndroid, isIos, saveMediaToDevice } from "../../../services/saveMedia";
 import { startOutgoingCall } from "../../../components/VideoCallManager";
 import { useVideoCallRemainingSeconds } from "../../../hooks/queries/useVideoCallQueries";
@@ -356,6 +357,7 @@ function SortableSavedPhraseRow({ phrase, onUse, onDelete, isDesktop }: Sortable
 
 export function ChatThreadPanel(props: ChatThreadPanelProps) {
 	const { t } = useTranslation();
+	const quickPhrasesScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
 	useAvatarCache();
     const apiFunctions = useApiFunctions();
 	const { unitsPreset, geohash } = usePreferences();
@@ -1945,7 +1947,11 @@ export function ChatThreadPanel(props: ChatThreadPanelProps) {
 						)}
 						{/* --- QUICK PHRASE PILLS --- */}
 						{!slashMenuMatch && filteredPhrases.length > 0 && (
-							<div className="mb-2 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+							<div
+								ref={quickPhrasesScrollRef}
+								data-lenis-prevent
+								className="mb-2 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+							>
 								{filteredPhrases.map((phrase, idx) => {
 									const isExact = phrase.toLowerCase() === draft.trim().toLowerCase();
 									return (

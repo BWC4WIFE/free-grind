@@ -1,3 +1,21 @@
+[2026-11-25 23:14] - Task: Fix Incognito toggle across account switches, Windows responsive scaling, and horizontal wheel/Shift+Wheel scrolling
+- Created: `src/utils/horizontalWheelScroll.ts`
+- Modified: `src/utils/privacy.ts`
+- Modified: `src/contexts/AuthContext.tsx`
+- Modified: `src/pages/app/SettingsPrivacyPage.tsx`
+- Modified: `src/hooks/useDesktopBreakpoint.ts`
+- Modified: `src/layouts/ProtectedLayout.tsx`
+- Modified: `src/pages/app/ChatPage.tsx`
+- Modified: `src/pages/app/chat/ChatInboxHeader.tsx`
+- Modified: `src/pages/app/sexual-health/SexualHealthPage.tsx`
+- Modified: `src/pages/app/gridpage/components/BrowseGrid.tsx`
+- Modified: `src/pages/app/GridPage.tsx`
+- Modified: `src/pages/app/chat/ChatThreadPanel.tsx`
+- Modified: `src/pages/app/gridpage/components/FloatingMiniChat.tsx`
+- Modified: `src/pages/app/gridpage/components/ProfileDetailsContent.tsx`
+- Modified: `src/pages/app/IssueSearchPage.tsx`
+- Modified: `src-tauri/tauri.conf.json`
+
 [2026-11-25 17:24] - Task: Notify incognito and read-receipt listeners on loadPrivacyCache (account switch)
 - Modified: `src/utils/privacy.ts`
 

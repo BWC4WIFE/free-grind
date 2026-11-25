@@ -114,7 +114,7 @@ import { formatDistance } from "./gridpage/utils";
 import { captureReplyPreviewsForMessages } from "../../services/replyMediaStore";
 import { useAvatarCache } from "../../hooks/useAvatarCache";
 import { fetchAndStoreAvatar, resolveAvatarSrc } from "../../services/avatarStore";
-import { useDesktopBreakpoint } from "../../hooks/useDesktopBreakpoint";
+import { useCanFitDualPane, useDesktopBreakpoint } from "../../hooks/useDesktopBreakpoint";
 import { appLog } from "../../utils/logger";
 import {
 	clearUnreadCountForProfile,
@@ -288,6 +288,7 @@ export function ChatPage() {
 	const { unitsPreset, showAlbumSensitiveContentWarning, sortDrawerMediaByFrequency, defaultExpiringPhotos, openAlbumAsBottomSheet } = usePreferences();
 	const { userId, settingsReady } = useAuth();
 	const isDesktop = useDesktopBreakpoint();
+	const isChatDualPane = useCanFitDualPane();
 	const threadBottomRef = useRef<HTMLDivElement | null>(null);
 	const threadScrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -6653,15 +6654,15 @@ export function ChatPage() {
 
 		return (
 			<section
-				className={`app-screen ${isDesktop ? "w-full !h-dvh !px-0 !pb-0 overflow-x-hidden flex flex-col" : "!p-0 !max-w-none !w-full"}`}
+				className={`app-screen ${isChatDualPane ? "w-full !h-dvh !px-0 !pb-0 overflow-x-hidden flex flex-col" : "!p-0 !max-w-none !w-full"}`}
 			>
-				{isDesktop ? (
+				{isChatDualPane ? (
 					<>
 						<ChatInboxHeader
 							{...sharedInboxHeaderProps}
-							isDesktop={true}
+							isDesktop={isDesktop}
 						/>
-						<div className="flex-1 min-h-0 mx-auto w-full max-w-6xl px-3 pb-[calc(env(safe-area-inset-bottom,0px)+104px)] grid grid-cols-[360px_minmax(0,1fr)] grid-rows-[1fr] gap-3">
+						<div className="flex-1 min-h-0 mx-auto w-full max-w-7xl px-3 pb-[calc(env(safe-area-inset-bottom,0px)+104px)] grid grid-cols-[minmax(280px,360px)_minmax(0,1fr)] grid-rows-[1fr] gap-3">
 							{renderInbox}
 							{renderThread}
 						</div>

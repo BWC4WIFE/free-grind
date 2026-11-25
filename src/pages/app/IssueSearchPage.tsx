@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Search, X, Loader2, ChevronRight, Plus, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BackToSettings } from "../../components/BackToSettings";
+import { useHorizontalWheelScroll } from "../../utils/horizontalWheelScroll";
 import {
 	searchIssues,
 	type IssueCategory,
@@ -105,6 +106,8 @@ function IssueCard({ issue }: { issue: IssueResult }) {
 
 export function IssueSearchPage() {
 	const { t } = useTranslation();
+	const categoryScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
+	const statusScrollRef = useHorizontalWheelScroll<HTMLDivElement>();
 
 	const [query, setQuery] = useState("");
 	const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("ALL");
@@ -273,7 +276,11 @@ export function IssueSearchPage() {
 			</div>
 
 			{/* Category filter */}
-			<div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+			<div
+				ref={categoryScrollRef}
+				data-lenis-prevent
+				className="mb-3 flex gap-2 overflow-x-auto pb-1"
+			>
 				{categoryTabs.map((tab) => (
 					<button
 						key={tab.value}
@@ -295,7 +302,11 @@ export function IssueSearchPage() {
 			</div>
 
 			{/* Status filter */}
-			<div className="mb-5 flex gap-2 overflow-x-auto pb-1">
+			<div
+				ref={statusScrollRef}
+				data-lenis-prevent
+				className="mb-5 flex gap-2 overflow-x-auto pb-1"
+			>
 				{statusTabs.map((tab) => (
 					<button
 						key={tab.value}
