@@ -41,6 +41,8 @@ export async function loadPrivacyCache(): Promise<void> {
     } catch {
         privacyCache = DEFAULT_PRIVACY_SETTINGS;
     }
+    notifyReadReceiptsChanged();
+    notifyIncognitoChanged();
 }
 
 // localStorage writes don't trigger re-renders in other components, so anything

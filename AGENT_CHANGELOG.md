@@ -1,3 +1,6 @@
+[2026-11-25 17:24] - Task: Notify incognito and read-receipt listeners on loadPrivacyCache (account switch)
+- Modified: `src/utils/privacy.ts`
+
 [2026-11-25 11:36] - Task: Remove unused BrowseGrid incognito props causing TS6133
 - Modified: `src/pages/app/gridpage/components/BrowseGrid.tsx`
 - Modified: `src/pages/app/GridPage.tsx`
