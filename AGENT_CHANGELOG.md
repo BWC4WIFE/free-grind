@@ -1,3 +1,7 @@
+[2026-11-25 11:36] - Task: Remove unused BrowseGrid incognito props causing TS6133
+- Modified: `src/pages/app/gridpage/components/BrowseGrid.tsx`
+- Modified: `src/pages/app/GridPage.tsx`
+
 [2026-11-25 06:40] - Task: Implement server-backed Incognito Mode with non-blocking Grid browsing
 - Modified: `src/utils/privacy.ts`
 - Modified: `src/services/api/profileMethods.ts`

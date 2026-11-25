@@ -2206,9 +2206,7 @@ export function GridPage() {
 							isLoadingCards={isLoadingCards}
 							cardsError={cardsError}
 							isLocationMissing={isLocationMissing}
-							isIncognitoActive={isIncognitoActive}
 							onOpenLocation={() => setIsLocationOpen(true)}
-							onManagePrivacy={() => navigate("/settings/privacy")}
 							cards={sortedCards}
 							chatContactIndexByProfileId={
 								(SHOW_DEMO_DATA && showDebugInfo)

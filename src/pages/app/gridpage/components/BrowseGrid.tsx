@@ -4,7 +4,7 @@ import { usePreferences } from "../../../../contexts/PreferencesContext";
 import { cn } from "../../../../utils/cn";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { Ghost, MapPin } from "lucide-react";
+import { MapPin } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
 	EmptyState,
@@ -56,9 +56,7 @@ type BrowseGridProps = {
 	isLoadingCards: boolean;
 	cardsError: string | null;
 	isLocationMissing?: boolean;
-	isIncognitoActive?: boolean;
 	onOpenLocation?: () => void;
-	onManagePrivacy?: () => void;
 	cards: BrowseCard[];
 	chatContactIndexByProfileId?: Record<string, ChatContactIndexRecord>;
 	localNicknamesByProfileId?: Record<string, string>;
@@ -89,9 +87,7 @@ export function BrowseGrid({
 	isLoadingCards,
 	cardsError,
 	isLocationMissing,
-	isIncognitoActive,
 	onOpenLocation,
-	onManagePrivacy,
 	cards,
 	chatContactIndexByProfileId,
 	localNicknamesByProfileId,
